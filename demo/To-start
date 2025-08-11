@@ -1,0 +1,3 @@
+nstall dependencies and run the demo: python demo/run_demo.py.
+For the API, run uvicorn src.main:app --reload and test with tools like Postman.
+
