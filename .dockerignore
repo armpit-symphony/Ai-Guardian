@@ -1,0 +1,14 @@
+.git
+.gitignore
+.pytest_cache
+.test-data
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+venv
+.env
+ai_guardian.db
+pytest-cache-files-*/
+tests
+src

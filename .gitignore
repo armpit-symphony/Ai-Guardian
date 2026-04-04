@@ -13,3 +13,4 @@ build/
 pytest-cache-files-*/
 .test-data/
 ai_guardian.db
+.env

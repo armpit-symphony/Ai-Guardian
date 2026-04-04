@@ -29,6 +29,14 @@ This version is shaped for a service business:
 6. Run the demo: `python -m demo.run_demo`
 7. Open docs: `http://127.0.0.1:8000/docs`
 
+## Docker Deploy
+1. Copy [.env.example](C:\Users\yopsp\OneDrive\Documents\Playground\Ai-Guardian\.env.example) to `.env` and set a real bootstrap key.
+2. Build and start: `docker compose up --build -d`
+3. Open the API at `http://your-server:8000/docs`
+4. Persisted SQLite data is stored in the `ai_guardian_data` Docker volume.
+
+The container entrypoint is defined in [Dockerfile](C:\Users\yopsp\OneDrive\Documents\Playground\Ai-Guardian\Dockerfile), and the server bundle is in [docker-compose.yml](C:\Users\yopsp\OneDrive\Documents\Playground\Ai-Guardian\docker-compose.yml).
+
 ## Tenant Bootstrap Flow
 1. `POST /api/v1/bootstrap/tenants` with header `x-bootstrap-key`.
 2. Save the returned tenant admin API key.
