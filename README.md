@@ -28,7 +28,7 @@ Most agent stacks are good at doing work and weak at proving that the work was s
 - Blocklists and allowlists for risky domains
 - Audit event history and proof verification
 - CSV and JSON event export
-- Lightweight operations dashboard
+- Lightweight operations dashboard with browser login and tenant onboarding
 - SQLite for local development and PostgreSQL-ready production wiring
 
 ## Product Status
@@ -119,6 +119,7 @@ Migration SQL lives in [migrations](C:\Users\yopsp\OneDrive\Documents\Playground
 ## Environment Variables
 
 - `AI_GUARDIAN_BOOTSTRAP_KEYS`: bootstrap keys used to create tenants
+- `AI_GUARDIAN_DASHBOARD_PASSWORD`: optional browser password for the dashboard
 - `AI_GUARDIAN_DATABASE_URL`: PostgreSQL DSN for production
 - `AI_GUARDIAN_DB_PATH`: SQLite path for local development
 - `AI_GUARDIAN_WEBHOOK_URLS`: comma-separated webhook endpoints for alerts
@@ -153,6 +154,7 @@ Monitoring and audit:
 
 Operations:
 - `GET /health`
+- `GET /dashboard/login`
 - `GET /dashboard`
 
 ## Example Workflow
@@ -223,6 +225,7 @@ AI Guardian is designed to reduce risk before an agent reaches production action
 This should be treated as a security control layer, not as your only security boundary. For production, pair it with:
 - HTTPS termination
 - strong key management
+- a real dashboard password or upstream auth layer
 - database backups
 - external log shipping
 - network restrictions

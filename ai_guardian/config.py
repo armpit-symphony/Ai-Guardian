@@ -20,6 +20,7 @@ class Settings:
     webhook_urls: tuple[str, ...]
     rate_limit_per_minute: int
     database_url: str | None = None
+    dashboard_password: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -61,4 +62,5 @@ def get_settings() -> Settings:
         suspicious_phrases=suspicious_phrases,
         webhook_urls=webhook_urls,
         rate_limit_per_minute=int(os.getenv("AI_GUARDIAN_RATE_LIMIT_PER_MINUTE", "120")),
+        dashboard_password=os.getenv("AI_GUARDIAN_DASHBOARD_PASSWORD") or None,
     )

@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 from ai_guardian.config import Settings
-from ai_guardian.main import _render_dashboard, create_app
+from ai_guardian.main import _render_dashboard, _render_dashboard_login, _sign_dashboard_session, _validate_dashboard_session, create_app
 from ai_guardian.models import AgentRegistration, MonitorRequest, TenantCreate
 from ai_guardian.notifications import AlertDispatcher
 from ai_guardian.security import stable_hash
@@ -216,6 +216,7 @@ def test_dashboard_data_includes_tenant_overview():
     assert "AI Guardian Ops" in html
     assert "Armpit Symphony" in html
     assert "Blocked" in html
+    assert "Bootstrap Tenant" in html
 
 
 def test_can_export_events_as_csv():
@@ -233,3 +234,11 @@ def test_can_export_events_as_csv():
     csv_body = service.export_events_csv(access)
     assert "tenant_id,agent_id,action,decision" in csv_body
     assert "Upload backup" in csv_body
+
+
+def test_dashboard_session_helpers():
+    cookie = _sign_dashboard_session("super-secret")
+    assert _validate_dashboard_session(cookie, "super-secret") is True
+    assert _validate_dashboard_session(cookie, "wrong-secret") is False
+    login_html = _render_dashboard_login(error="invalid")
+    assert "Invalid password" in login_html

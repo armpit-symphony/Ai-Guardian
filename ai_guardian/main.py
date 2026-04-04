@@ -6,9 +6,12 @@ import uuid
 from collections import deque
 from html import escape
 from threading import Lock
+import hashlib
+import hmac
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response, status
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import RedirectResponse
 
 from .config import Settings, get_settings
 from .models import AccessContext, AgentRegistration, MonitorRequest, TenantCreate
@@ -75,6 +78,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not constant_time_contains(x_bootstrap_key, app_settings.bootstrap_api_keys):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bootstrap key.")
         return x_bootstrap_key
+
+    def require_dashboard_access(request: Request) -> bool:
+        if not app_settings.dashboard_password:
+            return True
+        cookie = request.cookies.get("ai_guardian_dashboard")
+        if not cookie or not _validate_dashboard_session(cookie, app_settings.dashboard_password):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Dashboard login required.")
+        return True
 
     def require_access(x_api_key: str = Header(...)) -> AccessContext:
         if not limiter.check(f"api:{x_api_key}"):
@@ -188,14 +199,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def verify_proof(proof_hash: str, access: AccessContext = Depends(require_access)):
         return {"valid": service.verify_proof(access, proof_hash)}
 
-    @app.get("/dashboard", dependencies=[Depends(require_bootstrap_key)])
-    def dashboard() -> Response:
-        return Response(content=_render_dashboard(service), media_type="text/html")
+    @app.get("/dashboard/login")
+    def dashboard_login_page(error: str | None = Query(default=None)) -> Response:
+        return Response(content=_render_dashboard_login(error=error), media_type="text/html")
+
+    @app.post("/dashboard/login")
+    def dashboard_login(password: str = Form(...)):
+        if not app_settings.dashboard_password:
+            return RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+        if not hmac.compare_digest(password, app_settings.dashboard_password):
+            return RedirectResponse(url="/dashboard/login?error=invalid", status_code=status.HTTP_303_SEE_OTHER)
+        response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+        response.set_cookie(
+            key="ai_guardian_dashboard",
+            value=_sign_dashboard_session(app_settings.dashboard_password),
+            httponly=True,
+            samesite="lax",
+            max_age=60 * 60 * 8,
+        )
+        return response
+
+    @app.post("/dashboard/logout")
+    def dashboard_logout():
+        response = RedirectResponse(url="/dashboard/login", status_code=status.HTTP_303_SEE_OTHER)
+        response.delete_cookie("ai_guardian_dashboard")
+        return response
+
+    @app.post("/dashboard/bootstrap")
+    def dashboard_bootstrap_tenant(
+        request: Request,
+        name: str = Form(...),
+        slug: str = Form(...),
+        contact_email: str = Form(...),
+        plan: str = Form(...),
+        _: bool = Depends(require_dashboard_access),
+    ):
+        bootstrap_key = request.headers.get("x-bootstrap-key")
+        if not app_settings.dashboard_password and not bootstrap_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bootstrap key required when dashboard password is not configured.")
+        if not app_settings.dashboard_password:
+            require_bootstrap_key(bootstrap_key)  # type: ignore[arg-type]
+        service.bootstrap_tenant(
+            TenantCreate(name=name, slug=slug, contact_email=contact_email, plan=plan)  # type: ignore[arg-type]
+        )
+        return RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.get("/dashboard")
+    def dashboard(request: Request) -> Response:
+        if app_settings.dashboard_password:
+            require_dashboard_access(request)
+        elif "x-bootstrap-key" in request.headers:
+            require_bootstrap_key(request.headers["x-bootstrap-key"])
+        else:
+            return RedirectResponse(url="/dashboard/login", status_code=status.HTTP_303_SEE_OTHER)
+        return Response(content=_render_dashboard(service, password_enabled=bool(app_settings.dashboard_password)), media_type="text/html")
 
     return app
 
 
-def _render_dashboard(service: GuardianService) -> str:
+def _render_dashboard(service: GuardianService, password_enabled: bool = False) -> str:
     cards = []
     for overview in service.tenant_overviews():
         top_finding = overview.alert_summary.top_findings[0]["code"] if overview.alert_summary.top_findings else "none"
@@ -215,6 +277,31 @@ def _render_dashboard(service: GuardianService) -> str:
             """
         )
     body = "".join(cards) or '<article class="card empty"><h2>No tenants yet</h2><p>Bootstrap a tenant to start onboarding customers.</p></article>'
+    auth_block = (
+        """
+        <form method="post" action="/dashboard/logout" class="logout">
+          <button type="submit">Log out</button>
+        </form>
+        """
+        if password_enabled
+        else ""
+    )
+    onboarding = """
+      <section class="panel">
+        <h2>Bootstrap Tenant</h2>
+        <form method="post" action="/dashboard/bootstrap" class="form-grid">
+          <input name="name" placeholder="Tenant name" required />
+          <input name="slug" placeholder="tenant-slug" pattern="[a-z0-9-]+" required />
+          <input name="contact_email" placeholder="ops@example.com" type="email" required />
+          <select name="plan">
+            <option value="starter">starter</option>
+            <option value="growth" selected>growth</option>
+            <option value="enterprise">enterprise</option>
+          </select>
+          <button type="submit">Create tenant</button>
+        </form>
+      </section>
+    """
     return f"""
     <!doctype html>
     <html lang="en">
@@ -236,8 +323,13 @@ def _render_dashboard(service: GuardianService) -> str:
           .lead {{ max-width: 720px; font-size: 1.05rem; line-height: 1.6; }}
           .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin-top: 30px; }}
           .card {{ background: linear-gradient(180deg, #fffdf7, var(--panel)); border: 1px solid var(--border); border-radius: 20px; padding: 20px; box-shadow: 0 10px 30px rgba(24,35,29,0.08); }}
+          .panel {{ margin-top: 24px; background: linear-gradient(180deg, #fffdf7, var(--panel)); border: 1px solid var(--border); border-radius: 20px; padding: 20px; box-shadow: 0 10px 30px rgba(24,35,29,0.08); }}
           .meta, .finding, span {{ color: #55645c; }}
           .grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 20px; }}
+          .form-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px; }}
+          input, select, button {{ font: inherit; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border); }}
+          button {{ background: var(--accent); color: white; cursor: pointer; }}
+          .logout {{ display: flex; justify-content: flex-end; margin-top: 12px; }}
           strong {{ display: block; font-size: 1.8rem; color: var(--accent); }}
           .empty {{ text-align: center; padding: 40px 20px; }}
         </style>
@@ -246,11 +338,56 @@ def _render_dashboard(service: GuardianService) -> str:
         <main>
           <h1>AI Guardian Ops</h1>
           <p class="lead">Tenant-by-tenant visibility for the managed safety layer protecting bots, products, and production sites.</p>
+          {auth_block}
+          {onboarding}
           <section class="cards">{body}</section>
         </main>
       </body>
     </html>
     """
+
+
+def _render_dashboard_login(error: str | None = None) -> str:
+    error_html = '<p class="error">Invalid password. Try again.</p>' if error == "invalid" else ""
+    return f"""
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>AI Guardian Login</title>
+        <style>
+          body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: linear-gradient(145deg, #f4ead6, #fffef9); font-family: Georgia, 'Times New Roman', serif; color: #1d2b23; }}
+          .card {{ width: min(420px, calc(100vw - 32px)); background: rgba(255,250,241,0.95); border: 1px solid #d7c9ae; border-radius: 24px; padding: 28px; box-shadow: 0 12px 40px rgba(24,35,29,0.12); }}
+          h1 {{ margin-top: 0; }}
+          p {{ color: #55645c; line-height: 1.5; }}
+          input, button {{ width: 100%; font: inherit; padding: 12px 14px; border-radius: 12px; border: 1px solid #d7c9ae; margin-top: 12px; }}
+          button {{ background: #0d6b4d; color: white; cursor: pointer; }}
+          .error {{ color: #9b2c2c; }}
+        </style>
+      </head>
+      <body>
+        <main class="card">
+          <h1>AI Guardian Dashboard</h1>
+          <p>Sign in with the dashboard password to manage tenants and review product activity.</p>
+          {error_html}
+          <form method="post" action="/dashboard/login">
+            <input type="password" name="password" placeholder="Dashboard password" required />
+            <button type="submit">Sign in</button>
+          </form>
+        </main>
+      </body>
+    </html>
+    """
+
+
+def _sign_dashboard_session(password: str) -> str:
+    return hashlib.sha256(f"ai-guardian:{password}".encode("utf-8")).hexdigest()
+
+
+def _validate_dashboard_session(cookie: str, password: str) -> bool:
+    expected = _sign_dashboard_session(password)
+    return hmac.compare_digest(cookie, expected)
 
 
 app = create_app()
