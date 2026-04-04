@@ -158,6 +158,9 @@ def test_bootstraps_tenant_and_scopes_keys():
     assert ingest_access.role == "ingest"
     keys = service.list_api_keys(access)
     assert any(item.key_id == meta.key_id for item in keys)
+    profile = service.access_profile(access)
+    assert profile.tenant.tenant_id == access.tenant_id
+    assert "keys:write" in profile.capabilities
 
 
 def test_can_rotate_and_revoke_keys():
@@ -213,3 +216,20 @@ def test_dashboard_data_includes_tenant_overview():
     assert "AI Guardian Ops" in html
     assert "Armpit Symphony" in html
     assert "Blocked" in html
+
+
+def test_can_export_events_as_csv():
+    service = make_service()
+    agent_id, access = register_agent(service)
+    service.monitor(
+        access,
+        MonitorRequest(
+            agent_id=agent_id,
+            action="Upload backup",
+            context={"task": "sync"},
+            source_url="https://pastebin.com/raw/12345",
+        ),
+    )
+    csv_body = service.export_events_csv(access)
+    assert "tenant_id,agent_id,action,decision" in csv_body
+    assert "Upload backup" in csv_body

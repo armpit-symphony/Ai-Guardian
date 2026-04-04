@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 import secrets
+from csv import DictWriter
+from io import StringIO
 
 from .config import Settings
 from .models import (
+    AccessProfile,
     AccessContext,
     AgentRecord,
     AgentRegistration,
@@ -84,6 +87,18 @@ class GuardianService:
     def list_api_keys(self, access: AccessContext) -> list[ApiKeyRecord]:
         return self.store.list_api_keys(access.tenant_id)
 
+    def access_profile(self, access: AccessContext) -> AccessProfile:
+        tenant = self.store.get_tenant(access.tenant_id)
+        api_key = self.store.get_api_key(access.tenant_id, access.key_id)
+        if not tenant or not api_key:
+            raise ValueError("Access context could not be resolved.")
+        capabilities = {
+            "admin": ["tenant:read", "keys:write", "agents:write", "monitor:write", "events:read", "events:export"],
+            "ingest": ["agents:write", "monitor:write"],
+            "viewer": ["tenant:read", "events:read", "events:export"],
+        }[access.role]
+        return AccessProfile(service_name=self.settings.service_name, tenant=tenant, api_key=api_key, capabilities=capabilities)
+
     def register_agent(self, access: AccessContext, registration: AgentRegistration) -> AgentRecord:
         agent_id = f"agt_{secrets.token_hex(8)}"
         return self.store.create_agent(tenant_id=access.tenant_id, agent_id=agent_id, registration=registration)
@@ -144,3 +159,28 @@ class GuardianService:
 
     def verify_proof(self, access: AccessContext, proof: str) -> bool:
         return self.store.verify_proof(access.tenant_id, proof)
+
+    def export_events_csv(self, access: AccessContext, decision: str | None = None, limit: int = 500) -> str:
+        events = self.store.list_events(access.tenant_id, limit=limit, decision=decision)
+        buffer = StringIO()
+        writer = DictWriter(
+            buffer,
+            fieldnames=["id", "tenant_id", "agent_id", "action", "decision", "anomaly", "proof", "source_url", "created_at", "findings"],
+        )
+        writer.writeheader()
+        for event in events:
+            writer.writerow(
+                {
+                    "id": event.id,
+                    "tenant_id": event.tenant_id,
+                    "agent_id": event.agent_id,
+                    "action": event.action,
+                    "decision": event.decision,
+                    "anomaly": event.anomaly,
+                    "proof": event.proof,
+                    "source_url": event.source_url or "",
+                    "created_at": event.created_at.isoformat(),
+                    "findings": ",".join(item["code"] for item in event.findings),
+                }
+            )
+        return buffer.getvalue()

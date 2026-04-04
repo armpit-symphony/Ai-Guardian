@@ -111,3 +111,10 @@ class AccessContext(BaseModel):
     key_id: str
     tenant_id: str
     role: Literal["admin", "ingest", "viewer"]
+
+
+class AccessProfile(BaseModel):
+    service_name: str
+    tenant: TenantRecord
+    api_key: ApiKeyRecord
+    capabilities: list[str]

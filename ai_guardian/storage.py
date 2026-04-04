@@ -163,6 +163,11 @@ class SQLiteStore:
             rows = self._conn.execute("SELECT * FROM tenants ORDER BY created_at DESC").fetchall()
         return [_row_to_tenant(dict(row)) for row in rows]
 
+    def get_tenant(self, tenant_id: str) -> TenantRecord | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
+        return _row_to_tenant(dict(row)) if row else None
+
     def create_api_key(self, key_id: str, tenant_id: str, name: str, role: str, key_hash: str) -> ApiKeyRecord:
         created_at = _utc_now()
         with self._lock:
@@ -198,6 +203,13 @@ class SQLiteStore:
                 "SELECT * FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC", (tenant_id,)
             ).fetchall()
         return [_row_to_api_key(dict(row)) for row in rows]
+
+    def get_api_key(self, tenant_id: str, key_id: str) -> ApiKeyRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM api_keys WHERE tenant_id = ? AND key_id = ?", (tenant_id, key_id)
+            ).fetchone()
+        return _row_to_api_key(dict(row)) if row else None
 
     def revoke_api_key(self, tenant_id: str, key_id: str) -> ApiKeyRecord | None:
         revoked_at = _utc_now().isoformat()
@@ -356,6 +368,13 @@ class PostgresStore:
                 rows = cur.fetchall()
         return [_row_to_tenant(row) for row in rows]
 
+    def get_tenant(self, tenant_id: str) -> TenantRecord | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM tenants WHERE tenant_id = %s", (tenant_id,))
+                row = cur.fetchone()
+        return _row_to_tenant(row) if row else None
+
     def create_api_key(self, key_id: str, tenant_id: str, name: str, role: str, key_hash: str) -> ApiKeyRecord:
         created_at = _utc_now()
         with self._connect() as conn:
@@ -385,6 +404,13 @@ class PostgresStore:
                 cur.execute("SELECT * FROM api_keys WHERE tenant_id = %s ORDER BY created_at DESC", (tenant_id,))
                 rows = cur.fetchall()
         return [_row_to_api_key(row) for row in rows]
+
+    def get_api_key(self, tenant_id: str, key_id: str) -> ApiKeyRecord | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM api_keys WHERE tenant_id = %s AND key_id = %s", (tenant_id, key_id))
+                row = cur.fetchone()
+        return _row_to_api_key(row) if row else None
 
     def revoke_api_key(self, tenant_id: str, key_id: str) -> ApiKeyRecord | None:
         revoked_at = _utc_now()

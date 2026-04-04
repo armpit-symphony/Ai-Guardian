@@ -64,7 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
     app = FastAPI(
         title=app_settings.service_name,
-        version="0.3.0",
+        version="0.4.0",
         description="AI Guardian protects autonomous bots, products, and sites from unsafe actions and credential leaks.",
     )
     service = GuardianService(app_settings)
@@ -104,6 +104,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/v1/agents")
     def register_agent(payload: AgentRegistration, access: AccessContext = Depends(require_access)):
         return service.register_agent(require_role(access, ("admin", "ingest")), payload)
+
+    @app.get("/api/v1/me")
+    def get_me(access: AccessContext = Depends(require_access)):
+        try:
+            return service.access_profile(access)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     @app.get("/api/v1/agents")
     def list_agents(access: AccessContext = Depends(require_access)):
@@ -159,6 +166,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/alerts/summary")
     def alert_summary(access: AccessContext = Depends(require_access)):
         return service.store.alert_summary(access.tenant_id)
+
+    @app.get("/api/v1/events/export")
+    def export_events(
+        format: str = Query(default="csv", pattern="^(csv|json)$"),
+        limit: int = Query(default=500, ge=1, le=5000),
+        decision: str | None = Query(default=None),
+        access: AccessContext = Depends(require_access),
+    ):
+        scoped_access = require_role(access, ("admin", "viewer"))
+        if format == "json":
+            return service.store.list_events(tenant_id=scoped_access.tenant_id, limit=limit, decision=decision)
+        csv_body = service.export_events_csv(scoped_access, decision=decision, limit=limit)
+        return Response(
+            content=csv_body,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="ai-guardian-events.csv"'},
+        )
 
     @app.get("/api/v1/verify/{proof_hash}")
     def verify_proof(proof_hash: str, access: AccessContext = Depends(require_access)):
