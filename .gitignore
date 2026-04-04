@@ -9,3 +9,7 @@ venv/
 dist/
 build/
 *.log
+.pytest_cache/
+pytest-cache-files-*/
+.test-data/
+ai_guardian.db

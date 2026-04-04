@@ -1,38 +1,60 @@
 # Architecture and Builder's Guide
 
-This document outlines the complete stack architecture for the AI Agent Guardian platform, including components, data flow, and extension points for builders.
+This version of AI Guardian is structured as a small SaaS control plane for protecting bots, automations, and web properties. The goal is to support both your own production workflows and future client tenants from the same backend foundation.
 
-## High-Level Architecture
-- **Frontend (Future)**: React/Vue app for dashboard (not in v1; add via separate repo or integrate).
-- **Backend**: FastAPI for RESTful API, handling monitoring and verification.
-- **Core Components**:
-  - **Agent Simulator**: Mock AI agent that performs actions and maintains "memory" (simple dict).
-  - **Guardian Monitor**: Watches for anomalies (e.g., hash mismatches in context).
-  - **Decentralized Verifier**: Uses cryptographic proofs (SHA-256 hashes chained like a merkle tree) to verify actions without a central authority. In v1, it's in-memory; extend to blockchain for persistence.
-- **Database (Future)**: PostgreSQL or MongoDB for logging anomalies (v1 uses in-memory).
-- **Cloud Integration**: Deploy as serverless (e.g., AWS Lambda) or containerized (Docker/Kubernetes).
-- **Security**: API keys for access; extend with OAuth.
+## Current Service Layout
+- `ai_guardian/main.py`: FastAPI app factory, tenant bootstrap, scoped auth, and the HTML dashboard.
+- `ai_guardian/service.py`: orchestration layer for tenants, API keys, agent onboarding, and monitoring decisions.
+- `ai_guardian/policy.py`: policy engine for domain controls, prompt injection checks, secret detection, and tamper validation.
+- `ai_guardian/storage.py`: SQLite-backed persistence for tenants, keys, agents, events, proofs, and summaries.
+- `ai_guardian/security.py`: hashing, token detection, API-key hashing, and domain parsing helpers.
+- `demo/run_demo.py`: local end-to-end SaaS-style simulation.
+- `tests/test_service.py`: tests for tenant scoping, monitoring, and dashboard output.
 
-## Data Flow
-1. AI Agent performs an action → Sends to Guardian API.
-2. Guardian hashes the action/context → Checks against previous proofs.
-3. If anomaly (e.g., hash mismatch), flags and logs.
-4. Returns verification proof.
+## Core Flow
+1. An operator bootstraps a tenant using a bootstrap key.
+2. The service returns the first tenant admin key.
+3. Admins create ingest or viewer keys for separate workloads.
+4. Bots register agents under the tenant and send actions to `POST /api/v1/monitor`.
+5. The policy engine evaluates:
+   - memory checksum mismatches
+   - suspicious instructions
+   - blocked or unknown domains
+   - leaked credentials or bearer tokens
+   - high-impact actions that merit review
+6. The service stores the event, generates a proof hash, and returns `allow`, `review`, or `block`.
+7. Operators inspect summaries through API endpoints or `/dashboard`.
 
-## Builder's Guide for Complete Stack
-- **Extend Monitoring**: Add rules in `guardian.py` for more anomaly types (e.g., regex for unauthorized APIs).
-- **Decentralized Layer**: Replace mock hashes with web3.py for Ethereum. Store proofs on-chain.
-- **Scaling**: Use Celery/Redis for async monitoring tasks.
-- **Testing**: Add more tests in `tests/`. Use pytest.
-- **Deployment Pipeline**: Add GitHub Actions YAML for CI/CD.
-- **Version 1 Demo**: Simulates 5 agent actions with one anomaly. Extend to real AI agents (e.g., integrate with LangChain).
+## Why This Is More Sellable
+- Customer tenants now exist as first-class records.
+- API keys are scoped by tenant and role.
+- API keys can be rotated and revoked.
+- Agents and events are isolated by tenant.
+- There is a bootstrap path for onboarding a customer without touching code.
+- There is a lightweight dashboard for operator visibility.
+- Webhooks and request-level controls make the service more operationally usable.
 
-## Components Breakdown
-| Component | Description | Tech | Extension Points |
-|-----------|-------------|------|------------------|
-| Agent Sim | Mock AI agent | Python classes | Integrate real AI (e.g., OpenAI API) |
-| Guardian | Monitoring logic | FastAPI routes | Add ML-based anomaly detection (e.g., scikit-learn) |
-| Verifier | Proof generation | Cryptography (hashlib) | Blockchain integration (web3) |
-| Demo | End-to-end script | Python script | Build UI dashboard |
+## Suggested Packaging
+- Starter: one tenant, basic policies, shared support.
+- Growth: custom allowlists, more keys, webhook alerts, and onboarding support.
+- Enterprise: SSO, stronger audit retention, custom deployment, and signed attestations.
 
-For questions, open an issue on GitHub.
+## Security Priorities
+- Replace shared bootstrap keys with a proper admin auth system or one-time setup flow.
+- Move tenant data from SQLite to PostgreSQL before true multi-user production.
+- Add request signing in addition to API keys.
+- Replace the in-memory limiter with Redis or gateway-enforced rate limits.
+- Add durable outbound notification retrying for blocked or tampered actions.
+
+## Near-Term Build Path
+1. Add webhook delivery for blocked and review events.
+2. Add tenant branding and dashboard authentication.
+3. Add usage metering and billing records.
+4. Add SDKs so customer bots can call the API easily.
+5. Add a PostgreSQL migration path.
+
+## Deployment Notes
+- Development: `uvicorn ai_guardian.main:app --reload`
+- Demo bootstrap env var: `AI_GUARDIAN_BOOTSTRAP_KEYS`
+- Hosted MVP: containerize with Gunicorn/Uvicorn workers behind HTTPS.
+- Production data: use PostgreSQL, rotate keys, and back event logs with object storage.
