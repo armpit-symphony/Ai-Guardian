@@ -19,13 +19,13 @@ from .models import (
 from .notifications import AlertDispatcher
 from .policy import PolicyContext, PolicyEngine
 from .security import generate_api_key, hash_api_key
-from .storage import SQLiteStore
+from .storage import create_store
 
 
 class GuardianService:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.store = SQLiteStore(settings.database_path)
+        self.store = create_store(settings.database_path, settings.database_url)
         self.policy = PolicyEngine()
         self.alerts = AlertDispatcher(settings.webhook_urls)
         self.logger = logging.getLogger("ai_guardian")

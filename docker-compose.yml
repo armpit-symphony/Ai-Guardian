@@ -11,9 +11,26 @@ services:
       - .env
     environment:
       AI_GUARDIAN_DB_PATH: /app/data/ai_guardian.db
+      AI_GUARDIAN_DATABASE_URL: ${AI_GUARDIAN_DATABASE_URL:-}
       PORT: 8000
     volumes:
       - ai_guardian_data:/app/data
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-guardian-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_guardian}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_guardian}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ai_guardian_postgres_data:/var/lib/postgresql/data
 
 volumes:
   ai_guardian_data:
+  ai_guardian_postgres_data:

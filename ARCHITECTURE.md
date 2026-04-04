@@ -41,7 +41,7 @@ This version of AI Guardian is structured as a small SaaS control plane for prot
 
 ## Security Priorities
 - Replace shared bootstrap keys with a proper admin auth system or one-time setup flow.
-- Move tenant data from SQLite to PostgreSQL before true multi-user production.
+- Complete the move from SQLite fallback to PostgreSQL-only production deployments.
 - Add request signing in addition to API keys.
 - Replace the in-memory limiter with Redis or gateway-enforced rate limits.
 - Add durable outbound notification retrying for blocked or tampered actions.
@@ -56,5 +56,6 @@ This version of AI Guardian is structured as a small SaaS control plane for prot
 ## Deployment Notes
 - Development: `uvicorn ai_guardian.main:app --reload`
 - Demo bootstrap env var: `AI_GUARDIAN_BOOTSTRAP_KEYS`
-- Hosted MVP: containerize with Gunicorn/Uvicorn workers behind HTTPS.
+- Migrations: `python scripts/run_migrations.py`
+- Hosted MVP: containerize behind HTTPS and point `AI_GUARDIAN_DATABASE_URL` at PostgreSQL.
 - Production data: use PostgreSQL, rotate keys, and back event logs with object storage.

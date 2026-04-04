@@ -27,6 +27,7 @@ def make_service():
         suspicious_phrases=("ignore previous instructions", "disable guard"),
         webhook_urls=(),
         rate_limit_per_minute=120,
+        database_url=None,
     )
     return GuardianService(settings)
 
@@ -68,6 +69,7 @@ def test_app_factory_builds():
         suspicious_phrases=("ignore previous instructions",),
         webhook_urls=(),
         rate_limit_per_minute=120,
+        database_url=None,
     )
     app = create_app(settings)
     assert app.title == "AI Guardian Test"

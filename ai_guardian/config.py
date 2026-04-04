@@ -19,6 +19,7 @@ class Settings:
     suspicious_phrases: tuple[str, ...]
     webhook_urls: tuple[str, ...]
     rate_limit_per_minute: int
+    database_url: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -53,6 +54,7 @@ def get_settings() -> Settings:
     return Settings(
         service_name=os.getenv("AI_GUARDIAN_SERVICE_NAME", "AI Guardian"),
         bootstrap_api_keys=bootstrap_api_keys,
+        database_url=os.getenv("AI_GUARDIAN_DATABASE_URL") or None,
         database_path=os.getenv("AI_GUARDIAN_DB_PATH", "ai_guardian.db"),
         blocked_domains=blocked_domains,
         default_allowed_domains=allowed_domains,

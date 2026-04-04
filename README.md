@@ -37,6 +37,11 @@ This version is shaped for a service business:
 
 The container entrypoint is defined in [Dockerfile](C:\Users\yopsp\OneDrive\Documents\Playground\Ai-Guardian\Dockerfile), and the server bundle is in [docker-compose.yml](C:\Users\yopsp\OneDrive\Documents\Playground\Ai-Guardian\docker-compose.yml).
 
+## PostgreSQL Mode
+- Set `AI_GUARDIAN_DATABASE_URL` to a Postgres DSN such as `postgresql://ai_guardian:change-me@postgres:5432/ai_guardian`.
+- Run migrations with `python scripts/run_migrations.py`.
+- The app still supports SQLite for local development, but Postgres is now the preferred production path.
+
 ## Tenant Bootstrap Flow
 1. `POST /api/v1/bootstrap/tenants` with header `x-bootstrap-key`.
 2. Save the returned tenant admin API key.
@@ -71,7 +76,6 @@ The container entrypoint is defined in [Dockerfile](C:\Users\yopsp\OneDrive\Docu
 - Feed blocked events into a human-review queue before any production action is retried.
 
 ## Next Commercial Steps
-- Move from SQLite to PostgreSQL.
 - Add webhooks, Slack, or email alerting.
 - Add signed attestations and immutable storage.
 - Add SDKs for Python, Node, and browser workers.
