@@ -72,3 +72,31 @@ class TestRotatePin:
 
         db_val = store.get_breakglass_config("pin_hash")
         assert db_val is not None
+
+    def test_rotate_pin_survives_restart(self, store):
+        """PIN rotation is durable: after rotate + store reset, old PIN fails, new PIN works.
+
+        Simulates a service restart between rotation and next use.
+        This is the critical adversarial case for PIN lifecycle security.
+        """
+        configure_store(store)
+        configure_pin_hash(None)
+
+        # Rotate to a known PIN
+        rotate_pin(current_pin="ai-guardian-breakglass-2026", new_pin="restartable999", actor="admin")
+
+        # Simulate service restart: wipe in-memory pin ref, reconfigure
+        import ai_guardian.breakglass as bg_module
+        bg_module._pin_hash_ref = bg_module._DEFAULT_PIN_HASH  # pretend restart resets to default
+        configure_pin_hash(store.get_breakglass_config("pin_hash"))  # reload from DB
+
+        # Old default PIN must FAIL
+        assert verify_pin("ai-guardian-breakglass-2026") is False, \
+            "FAIL: old default PIN should be blocked after rotation and restart"
+
+        # New PIN must WORK
+        assert verify_pin("restartable999") is True, \
+            "FAIL: new PIN should work after rotation and restart"
+
+        # Rotate back to default (cleanup)
+        assert rotate_pin("restartable999", "ai-guardian-breakglass-2026", "admin") is True

@@ -288,6 +288,38 @@ Revokes a breakglass session immediately.
 
 ---
 
+```
+POST /api/v1/breakglass/pin/rotate
+```
+**Roles:** admin | **Content-Type:** `application/json`
+
+Rotates the breakglass PIN. Requires the current PIN and the new PIN. After rotation, the old PIN is immediately invalid and only the new PIN is valid. All active breakglass sessions remain valid.
+
+**Request body:**
+```json
+{
+  "current_pin": "ai-guardian-breakglass-2026",
+  "new_pin": "my-new-secure-pin-123"
+}
+```
+
+**Response `200`:**
+```json
+{"status": "rotated", "pin_hash": "sha256:..."}
+```
+
+**Response `400`** — new PIN too short (min 6 chars):
+```json
+{"detail": "New PIN must be at least 6 characters."}
+```
+
+**Response `401`** — wrong current PIN:
+```json
+{"detail": "Current PIN is incorrect."}
+```
+
+---
+
 ### Audit Log
 
 ```

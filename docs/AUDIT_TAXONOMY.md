@@ -106,6 +106,7 @@ guardian_blocked:ssrf:http_call
 | `breakglass_create` | A breakglass session is created |
 | `breakglass_override:{action}` | Breakglass used to override a blocked action |
 | `breakglass_revoke` | A breakglass session was revoked |
+| `breakglass_pin_rotated` | Admin rotated the breakglass PIN |
 
 ---
 
