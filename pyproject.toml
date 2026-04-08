@@ -8,6 +8,7 @@ version = "0.4.0"
 description = "Governance layer for autonomous AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
+packages = ["ai_guardian"]
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
