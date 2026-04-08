@@ -1,16 +1,20 @@
+# Byte-compiled / optimized files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-.env
-venv/
+*.py[cod]
 *.egg-info/
 dist/
 build/
-*.log
-.pytest_cache/
-pytest-cache-files-*/
+
+# Virtual environment
+.venv/
+
+# Test artifacts
 .test-data/
-ai_guardian.db
-.env
+*.db
+
+# Proof package (developer artifact)
+ai_guardian_proof.py
+ai_guardian_proof_curl.sh
+
+# OS junk
+.DS_Store

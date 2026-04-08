@@ -154,6 +154,43 @@ class GuardianInterceptor:
         # ── Step 3: Risk scoring (independent of policy decision) ──────────
         risk_score = self._calc_risk(request, findings)
 
+        # ── Step 4b: SSRF — hard-block internal/private URLs ───────────────
+        source_url = getattr(request, 'source_url', None)
+        if source_url:
+            try:
+                from urllib.parse import urlparse
+                raw = urlparse(source_url).netloc.lower().split("@")[-1]
+                # Handle IPv6: [::1]:8080 → extract ::1 from brackets
+                if raw.startswith("["):
+                    domain = raw.split("]")[0].lstrip("[")
+                else:
+                    domain = raw.split(":")[0]
+                for pat in ("localhost", "127.0.0.1", "169.254.169.254",
+                           "0.0.0.0", "::1", "metadata.google.internal",
+                           ".internal"):
+                    if pat in domain:
+                        audit_log.append(
+                            tenant_id=access.tenant_id,
+                            actor=access.key_id,
+                            action=f"guardian_blocked:ssrf:{request.action}",
+                            decision="blocked",
+                            context={
+                                "reason": "SSRF protection: internal URL not allowed",
+                                "source_url": source_url,
+                                "agent_id": request.agent_id,
+                            },
+                            risk_score=100,
+                        )
+                        return GuardianDecision(
+                            decision="blocked",
+                            reason=f"SSRF protection: internal URL '{domain}' is not allowed",
+                            risk_score=100,
+                            requires_approval=False,
+                            breakglass_used=False,
+                        )
+            except Exception:
+                pass
+
         # ── Step 4: Policy + risk-based decision ──────────────────────────
         if decision_str == "block":
             result = GuardianDecision(
@@ -196,6 +233,17 @@ class GuardianInterceptor:
                 approval_id=pending.approval_id,
             )
         else:
+            audit_log.append(
+                tenant_id=access.tenant_id,
+                actor=access.key_id,
+                action=f"guardian_allowed:{request.action}",
+                decision="allowed",
+                context={
+                    "agent_id": request.agent_id,
+                    "findings": [f.code for f in findings],
+                },
+                risk_score=risk_score,
+            )
             result = GuardianDecision(
                 decision="allowed",
                 reason="Allowed by policy",
