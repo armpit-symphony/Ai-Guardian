@@ -162,3 +162,34 @@ class AuditVerifyResponse(BaseModel):
     valid: bool
     total_entries: int
     errors: list[str]
+
+
+# ─── Enforcement Models ───
+class GuardianDecisionResponse(BaseModel):
+    decision: Literal["allowed", "blocked", "pending_approval"]
+    reason: str
+    risk_score: int = Field(ge=0, le=100)
+    requires_approval: bool
+    breakglass_used: bool
+    approval_id: str | None = None
+    proof: str | None = None
+
+
+class PendingApprovalRecord(BaseModel):
+    approval_id: str
+    tenant_id: str
+    agent_id: str
+    action: str
+    context: dict
+    actor: str
+    risk_score: int
+    created_at: datetime
+    status: Literal["pending", "approved", "denied", "expired"]
+    decision: str | None = None
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+
+
+class ApprovalDecideRequest(BaseModel):
+    approval_id: str
+    decision: Literal["approve", "deny"]

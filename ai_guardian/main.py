@@ -23,6 +23,9 @@ from .models import (
     BreakglassResponse,
     AuditRecord,
     AuditVerifyResponse,
+    GuardianDecisionResponse,
+    PendingApprovalRecord,
+    ApprovalDecideRequest,
 )
 from .security import constant_time_contains
 from .service import GuardianService
@@ -35,6 +38,14 @@ from .breakglass import (
     list_active_sessions,
 )
 from .audit import audit_log
+from .enforcement import (
+    get_pending,
+    get_pending_for_tenant,
+    approve_pending,
+    deny_pending,
+)
+from .interceptor import guardian, can_approve, resolve_pending_execution
+from .config import settings as app_settings
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -177,12 +188,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Key not found.")
         return record
 
-    @app.post("/api/v1/monitor")
+    @app.post("/api/v1/monitor", response_model=GuardianDecisionResponse, tags=["Guardian"])
     def monitor_agent(payload: MonitorRequest, access: AccessContext = Depends(require_access)):
-        try:
-            return service.monitor(require_role(access, ("admin", "ingest")), payload)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        """
+        Central guardian interceptor — ALL actions flow through this endpoint.
+        Returns standard GuardianDecision contract:
+        {
+            "decision": "allowed | blocked | pending_approval",
+            "reason": "...",
+            "risk_score": 0-100,
+            "requires_approval": bool,
+            "breakglass_used": bool,
+            "approval_id": str | None,
+            "proof": str | None
+        }
+        """
+        decision = guardian.evaluate(access, payload)
+        return GuardianDecisionResponse(
+            decision=decision.decision,
+            reason=decision.reason,
+            risk_score=decision.risk_score,
+            requires_approval=decision.requires_approval,
+            breakglass_used=decision.breakglass_used,
+            approval_id=decision.approval_id,
+            proof=decision.proof,
+        )
 
     @app.get("/api/v1/events")
     def list_events(
@@ -323,6 +353,105 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
         return {"status": "used" if success else "failed", "breakglass_id": breakglass_id, "action": action}
+
+    # ─── Approval Queue Endpoints ───
+
+    @app.get("/api/v1/approvals", response_model=list[PendingApprovalRecord], tags=["Guardian"])
+    def list_pending_approvals(access: AccessContext = Depends(require_access)):
+        """List all pending approvals for the tenant."""
+        pending = get_pending_for_tenant(access.tenant_id)
+        return [PendingApprovalRecord(
+            approval_id=r.approval_id,
+            tenant_id=r.tenant_id,
+            agent_id=r.agent_id,
+            action=r.action,
+            context=r.context,
+            actor=r.actor,
+            risk_score=r.risk_score,
+            created_at=r.created_at,
+            status=r.status,
+            decision=r.decision,
+            decided_by=r.decided_by,
+            decided_at=r.decided_at,
+        ) for r in pending]
+
+    @app.get("/api/v1/approvals/{approval_id}", response_model=PendingApprovalRecord, tags=["Guardian"])
+    def get_approval(approval_id: str, access: AccessContext = Depends(require_access)):
+        """Get a specific approval by ID."""
+        pending = get_pending(approval_id)
+        if not pending:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found")
+        if pending.tenant_id != access.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant isolation violation")
+        return PendingApprovalRecord(
+            approval_id=pending.approval_id,
+            tenant_id=pending.tenant_id,
+            agent_id=pending.agent_id,
+            action=pending.action,
+            context=pending.context,
+            actor=pending.actor,
+            risk_score=pending.risk_score,
+            created_at=pending.created_at,
+            status=pending.status,
+            decision=pending.decision,
+            decided_by=pending.decided_by,
+            decided_at=pending.decided_at,
+        )
+
+    @app.post("/api/v1/approvals/{approval_id}/decide", response_model=PendingApprovalRecord, tags=["Guardian"])
+    def decide_approval(
+        approval_id: str,
+        action: ApprovalDecideRequest,
+        access: AccessContext = Depends(require_access),
+    ):
+        """
+        Approve or deny a pending approval.
+        Only admin/operator can decide.
+        """
+        if not can_approve(access):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions to decide approvals")
+
+        pending = get_pending(approval_id)
+        if not pending:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found")
+        if pending.tenant_id != access.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant isolation violation")
+        if pending.status != "pending":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Approval is {pending.status}, cannot decide")
+
+        if action.decision == "approve":
+            updated = approve_pending(approval_id, access.key_id)
+        else:
+            updated = deny_pending(approval_id, access.key_id)
+
+        audit_log.append(
+            tenant_id=access.tenant_id,
+            actor=access.key_id,
+            action=f"guardian_approval_{action.decision}d:{pending.action}",
+            decision=action.decision,
+            context={
+                "approval_id": approval_id,
+                "agent_id": pending.agent_id,
+                "action": pending.action,
+                "actor": pending.actor,
+            },
+            risk_score=pending.risk_score,
+        )
+
+        return PendingApprovalRecord(
+            approval_id=updated.approval_id,
+            tenant_id=updated.tenant_id,
+            agent_id=updated.agent_id,
+            action=updated.action,
+            context=updated.context,
+            actor=updated.actor,
+            risk_score=updated.risk_score,
+            created_at=updated.created_at,
+            status=updated.status,
+            decision=updated.decision,
+            decided_by=updated.decided_by,
+            decided_at=updated.decided_at,
+        )
 
     # ─── Audit Log Endpoints ───
 
