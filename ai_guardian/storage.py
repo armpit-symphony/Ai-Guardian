@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS events (
     FOREIGN KEY(agent_id) REFERENCES agents(agent_id),
     FOREIGN KEY(tenant_id) REFERENCES tenants(tenant_id)
 );
+
+CREATE TABLE IF NOT EXISTS breakglass_config (
+    config_key  TEXT PRIMARY KEY,
+    config_val  TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    updated_by   TEXT
+);
 """
 
 POSTGRES_SCHEMA = """
@@ -119,6 +126,13 @@ CREATE TABLE IF NOT EXISTS events (
     context JSONB NOT NULL,
     source_url TEXT,
     created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS breakglass_config (
+    config_key  TEXT PRIMARY KEY,
+    config_val  TEXT NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL,
+    updated_by   TEXT
 );
 """
 
@@ -315,15 +329,16 @@ class SQLiteStore:
         reason: str,
         pin_hash: str,
         actions_overridden: list[str],
+        used: bool = False,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """INSERT INTO breakglass_sessions
                    (breakglass_id, tenant_id, approved, created_at, expires_at,
                     actor, reason, pin_hash, actions_overridden, status, used)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)""",
                 (breakglass_id, tenant_id, int(approved), created_at, expires_at,
-                 actor, reason, pin_hash, json.dumps(actions_overridden)),
+                 actor, reason, pin_hash, json.dumps(actions_overridden), int(used)),
             )
             self._conn.commit()
 
@@ -380,6 +395,31 @@ class SQLiteStore:
                     (tenant_id,),
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Breakglass / guardian config (durable) ────────────────────────────
+
+    def get_breakglass_config(self, key: str) -> str | None:
+        """Get a breakglass/guardian config value by key. Returns None if not set."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT config_val FROM breakglass_config WHERE config_key = ?",
+                (key,),
+            ).fetchone()
+        return row["config_val"] if row else None
+
+    def set_breakglass_config(
+        self, key: str, value: str, updated_by: str | None = None
+    ) -> None:
+        """Set a breakglass/guardian config value. Insert or replace."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO breakglass_config (config_key, config_val, updated_at, updated_by)
+                   VALUES (?, ?, ?, ?)""",
+                (key, value, now, updated_by),
+            )
+            self._conn.commit()
 
     # ── Audit log (durable) ────────────────────────────────────────────────
 
@@ -661,7 +701,7 @@ class PostgresStore:
                     (approval_id,),
                 )
                 row = cur.fetchone()
-        return dict(row._asdict()) if row else None
+        return dict(row) if row else None
 
     def list_pending_approvals(
         self, tenant_id: str, status: str | None = None
@@ -679,7 +719,7 @@ class PostgresStore:
                         (tenant_id,),
                     )
                 rows = cur.fetchall()
-        return [dict(r._asdict()) for r in rows]
+        return [dict(r) for r in rows]
 
     def update_pending_approval(
         self,
@@ -703,7 +743,7 @@ class PostgresStore:
                 )
                 row = cur.fetchone()
             conn.commit()
-        return dict(row._asdict()) if row else None
+        return dict(row) if row else None
 
     def count_pending_approvals(self, tenant_id: str) -> int:
         with self._connect() as conn:
@@ -728,6 +768,7 @@ class PostgresStore:
         reason: str,
         pin_hash: str,
         actions_overridden: list[str],
+        used: bool = False,
     ) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -735,9 +776,9 @@ class PostgresStore:
                     """INSERT INTO breakglass_sessions
                        (breakglass_id, tenant_id, approved, created_at, expires_at,
                         actor, reason, pin_hash, actions_overridden, status, used)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0)""",
-                    (breakglass_id, tenant_id, int(approved), created_at, expires_at,
-                     actor, reason, pin_hash, json.dumps(actions_overridden)),
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)""",
+                    (breakglass_id, tenant_id, approved, created_at, expires_at,
+                     actor, reason, pin_hash, json.dumps(actions_overridden), used),
                 )
             conn.commit()
 
@@ -749,7 +790,7 @@ class PostgresStore:
                     (breakglass_id,),
                 )
                 row = cur.fetchone()
-        return dict(row._asdict()) if row else None
+        return dict(row) if row else None
 
     def update_breakglass_session(
         self,
@@ -773,7 +814,7 @@ class PostgresStore:
                 if used is not None:
                     cur.execute(
                         "UPDATE breakglass_sessions SET used = %s WHERE breakglass_id = %s",
-                        (int(used), breakglass_id),
+                        (used, breakglass_id),
                     )
                 cur.execute(
                     "SELECT * FROM breakglass_sessions WHERE breakglass_id = %s",
@@ -781,7 +822,7 @@ class PostgresStore:
                 )
                 row = cur.fetchone()
             conn.commit()
-        return dict(row._asdict()) if row else None
+        return dict(row) if row else None
 
     def list_breakglass_sessions(
         self, tenant_id: str, status: str | None = None
@@ -799,7 +840,39 @@ class PostgresStore:
                         (tenant_id,),
                     )
                 rows = cur.fetchall()
-        return [dict(r._asdict()) for r in rows]
+        return [dict(r) for r in rows]
+
+    # ── Breakglass / guardian config (durable) ────────────────────────────
+
+    def get_breakglass_config(self, key: str) -> str | None:
+        """Get a breakglass/guardian config value by key. Returns None if not set."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT config_val FROM breakglass_config WHERE config_key = %s",
+                    (key,),
+                )
+                row = cur.fetchone()
+        return dict(row)["config_val"] if row else None
+
+    def set_breakglass_config(
+        self, key: str, value: str, updated_by: str | None = None
+    ) -> None:
+        """Set a breakglass/guardian config value. Insert or replace."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO breakglass_config (config_key, config_val, updated_at, updated_by)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (config_key) DO UPDATE SET
+                         config_val = EXCLUDED.config_val,
+                         updated_at = EXCLUDED.updated_at,
+                         updated_by = EXCLUDED.updated_by""",
+                    (key, value, now, updated_by),
+                )
+            conn.commit()
 
     # ── Audit log (durable) ────────────────────────────────────────────────
 
@@ -815,7 +888,7 @@ class PostgresStore:
                 rows = cur.fetchall()
         by_tenant: dict[str, list[dict]] = {}
         for row in rows:
-            d = dict(row._asdict())
+            d = dict(row)
             tenant = d.pop("tenant_id")  # extract tenant; strip from entry
             d["context"] = json.loads(d["context"]) if isinstance(d["context"], str) else (d.get("context") or {})
             d["metadata"] = json.loads(d["metadata"]) if isinstance(d["metadata"], str) else (d.get("metadata") or {})

@@ -11,7 +11,7 @@ from threading import Lock
 import hashlib
 import hmac
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response, status
+from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
@@ -350,6 +350,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required.")
         sessions = list_active_sessions(access.tenant_id)
         return [session._asdict() for session in sessions]
+
+    @app.post("/api/v1/breakglass/pin/rotate", tags=["Guardian"], status_code=status.HTTP_200_OK)
+    def rotate_breakglass_pin(
+        current_pin: str = Body(..., embed=True),
+        new_pin: str = Body(..., embed=True),
+        access: AccessContext = Depends(require_access),
+    ):
+        """
+        Rotate the breakglass PIN. Requires admin role and the current PIN.
+        Writes an audit entry with actor and timestamp on success.
+        """
+        if access.role not in ("admin",):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required.")
+        if len(new_pin) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New PIN must be at least 6 characters.",
+            )
+        if rotate_pin(current_pin, new_pin, actor=access.key_id):
+            audit_log.append(
+                tenant_id=access.tenant_id,
+                actor=access.key_id,
+                action="breakglass_pin_rotated",
+                decision="pin_rotated",
+                context={"rotated_by": access.key_id},
+                risk_score=0,
+            )
+            return {"status": "rotated", "pin_hash": get_current_pin_hash()}
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current PIN is incorrect.")
 
     @app.post("/api/v1/breakglass/{breakglass_id}/use", tags=["Guardian"])
     def use_breakglass_session(

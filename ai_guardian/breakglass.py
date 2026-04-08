@@ -36,6 +36,9 @@ _STORE_LOCK = Lock()
 # Module-level store reference (set via configure_store())
 _store_ref: "SQLiteStore | None" = None
 
+# Current PIN hash (loaded from DB on startup; falls back to compiled default)
+_pin_hash_ref: str = _DEFAULT_PIN_HASH
+
 
 def configure_store(store: "SQLiteStore") -> None:
     """Wire breakglass to the service's DB store. Call once on startup."""
@@ -43,8 +46,15 @@ def configure_store(store: "SQLiteStore") -> None:
     _store_ref = store
 
 
+def configure_pin_hash(pin_hash: str | None) -> None:
+    """Set the active PIN hash. None = use compiled default."""
+    global _pin_hash_ref
+    _pin_hash_ref = pin_hash if pin_hash else _DEFAULT_PIN_HASH
+
+
 def load_from_db() -> None:
     """Rebuild in-memory cache from DB — called once on service startup."""
+    global _pin_hash_ref
     if _store_ref is None:
         return
     # Load all non-expired sessions so we can enforce used/revoked state
@@ -69,11 +79,14 @@ def load_from_db() -> None:
                 status=row["status"],
                 used=bool(row.get("used", 0)),
             )
+    # Load PIN hash from DB config (fall back to compiled default)
+    db_hash = _store_ref.get_breakglass_config("pin_hash")
+    _pin_hash_ref = db_hash if db_hash else _DEFAULT_PIN_HASH
 
 
 def verify_pin(pin: str) -> bool:
-    """Verify the breakglass PIN."""
-    return hashlib.sha256(pin.encode()).hexdigest() == _DEFAULT_PIN_HASH
+    """Verify the breakglass PIN against the currently configured hash."""
+    return hashlib.sha256(pin.encode()).hexdigest() == _pin_hash_ref
 
 
 def create_session(
@@ -319,3 +332,34 @@ def cleanup_expired() -> int:
         for bid in expired_ids:
             _STORE[bid] = _STORE[bid]._replace(status="expired")
     return len(expired_ids)
+
+
+def rotate_pin(current_pin: str, new_pin: str, actor: str) -> bool:
+    """
+    Rotate the breakglass PIN.
+
+    Requires the current PIN to authorize the change, sets a new PIN,
+    persists the new hash to DB, updates the in-memory ref, and writes
+    an audit entry.
+
+    Returns True on success, False if current PIN is wrong or new PIN
+    is invalid.
+    """
+    if not verify_pin(current_pin):
+        return False
+    if len(new_pin) < 6:
+        return False
+    if len(new_pin) > 64:
+        return False
+
+    new_hash = hashlib.sha256(new_pin.encode()).hexdigest()
+    if _store_ref is not None:
+        _store_ref.set_breakglass_config("pin_hash", new_hash, updated_by=actor)
+    global _pin_hash_ref
+    _pin_hash_ref = new_hash
+    return True
+
+
+def get_current_pin_hash() -> str:
+    """Return the currently active PIN hash (for read-only verification)."""
+    return _pin_hash_ref

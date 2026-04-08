@@ -1,0 +1,11 @@
+# Caddyfile for AI Guardian reverse proxy
+# Auto-managed TLS via Let's Encrypt
+
+ai-guardian.yourdomain.com {
+    reverse_proxy localhost:8000
+
+    # Log to stdout (container logging)
+    log {
+        output stdout
+    }
+}

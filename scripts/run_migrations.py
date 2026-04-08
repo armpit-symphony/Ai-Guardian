@@ -5,8 +5,30 @@ import sqlite3
 from pathlib import Path
 
 
-def _migration_files() -> list[Path]:
-    return sorted(Path("migrations").glob("*.sql"))
+def _migration_files_sqlite() -> list[Path]:
+    """SQLite migrations: all .sql files except .postgres.sql variants."""
+    return sorted(
+        p for p in Path("migrations").glob("*.sql")
+        if not p.name.endswith(".postgres.sql")
+    )
+
+
+def _migration_files_postgres() -> list[Path]:
+    """Postgres migrations: prefer .postgres.sql variants, fall back to generic .sql.
+
+    E.g. 0003_persistence.postgres.sql is preferred over 0003_persistence.sql.
+    """
+    result: dict[str, Path] = {}
+    for p in Path("migrations").glob("*.sql"):
+        if p.suffix == ".sql" and p.name.endswith(".postgres.sql"):
+            # e.g. 0003_persistence.postgres.sql → base=0003_persistence
+            base = p.name.rsplit(".postgres", 1)[0]
+            result[base] = p
+        elif not p.name.endswith(".postgres.sql"):
+            base = p.stem  # e.g. 0001_initial
+            if base not in result:
+                result[base] = p
+    return [result[k] for k in sorted(result)]
 
 
 def run_sqlite(database_path: str) -> None:
@@ -16,7 +38,7 @@ def run_sqlite(database_path: str) -> None:
             "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
         applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
-        for path in _migration_files():
+        for path in _migration_files_sqlite():
             if path.name in applied:
                 continue
             sql = path.read_text(encoding="utf-8")
@@ -44,12 +66,13 @@ def run_postgres(database_url: str) -> None:
             )
             cur.execute("SELECT version FROM schema_migrations")
             applied = {row[0] for row in cur.fetchall()}
-            for path in _migration_files():
+            for path in _migration_files_postgres():
                 if path.name in applied:
                     continue
-                cur.execute(path.read_text(encoding="utf-8"))
+                sql = path.read_text(encoding="utf-8")
+                cur.execute(sql)
                 cur.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (path.name,))
-        conn.commit()
+            conn.commit()
 
 
 if __name__ == "__main__":
