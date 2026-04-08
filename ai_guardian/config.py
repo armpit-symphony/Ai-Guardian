@@ -64,3 +64,11 @@ def get_settings() -> Settings:
         rate_limit_per_minute=int(os.getenv("AI_GUARDIAN_RATE_LIMIT_PER_MINUTE", "120")),
         dashboard_password=os.getenv("AI_GUARDIAN_DASHBOARD_PASSWORD") or None,
     )
+
+
+@lru_cache(maxsize=1)
+def _get_settings() -> Settings:
+    return get_settings()
+
+
+settings: Settings = _get_settings()

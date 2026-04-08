@@ -191,5 +191,4 @@ class PendingApprovalRecord(BaseModel):
 
 
 class ApprovalDecideRequest(BaseModel):
-    approval_id: str
     decision: Literal["approve", "deny"]
