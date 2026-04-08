@@ -2,13 +2,16 @@
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ai_guardian*"]
+
 [project]
 name = "ai-guardian"
 version = "0.4.0"
 description = "Governance layer for autonomous AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
-packages = ["ai_guardian"]
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
