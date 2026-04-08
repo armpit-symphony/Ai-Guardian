@@ -75,6 +75,18 @@ curl -X POST http://localhost:8000/api/v1/agents \
 
 ---
 
+## 3a. Create an Ingest Key (optional, for multi-role testing)
+
+```bash
+# Create a restricted ingest key — can submit actions but not approve or view audit
+curl -X POST "http://localhost:8000/api/v1/api-keys?name=IngestWorker&role=ingest" \
+  -H "X-API-Key: aig_live_abc123..."
+
+# Response: {"api_key": "aig_live_xyz...", "key_meta": {...}}
+```
+
+---
+
 ## 4. Submit Your First Action
 
 ```bash
@@ -112,7 +124,8 @@ curl -X POST http://localhost:8000/api/v1/monitor \
   -d '{
     "agent_id": "agt_...",
     "action": "http_call",
-    "context": {"url": "https://external-api.example.com/data"}
+    "context": {"url": "https://external-api.example.com/data"},
+    "source_url": "https://external-api.example.com/data"
   }'
 ```
 
@@ -138,13 +151,17 @@ curl -X POST http://localhost:8000/api/v1/monitor \
 curl http://localhost:8000/api/v1/approvals \
   -H "X-API-Key: aig_live_abc123..."
 
-# Approve
-curl -X POST "http://localhost:8000/api/v1/approvals/apr_abc123.../decide?decision=approve" \
-  -H "X-API-Key: aig_live_abc123..."
+# Approve (decision in body, not query parameter)
+curl -X POST "http://localhost:8000/api/v1/approvals/apr_abc123.../decide" \
+  -H "X-API-Key: aig_live_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "approve"}'
 
 # Deny
-curl -X POST "http://localhost:8000/api/v1/approvals/apr_abc123.../decide?decision=deny" \
-  -H "X-API-Key: aig_live_abc123..."
+curl -X POST "http://localhost:8000/api/v1/approvals/apr_abc123.../decide" \
+  -H "X-API-Key: aig_live_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "deny"}'
 ```
 
 ---

@@ -216,11 +216,17 @@ GET /api/v1/approvals/{approval_id}
 ---
 
 ```
-POST /api/v1/approvals/{approval_id}/decide?decision={approve|deny}
+POST /api/v1/approvals/{approval_id}/decide
 ```
-**Roles:** admin
+**Roles:** admin | **Content-Type:** `application/json`
 
-Query param: `decision=approve` or `decision=deny`
+Decision is provided in the request body, not as a query parameter.
+
+**Request body:**
+```json
+{"decision": "approve"}
+```
+or `{"decision": "deny"}`
 
 **Response `200`:** updated `PendingApprovalRecord`
 

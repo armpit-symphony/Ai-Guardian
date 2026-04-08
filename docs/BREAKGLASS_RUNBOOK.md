@@ -57,10 +57,10 @@ Obtain the breakglass PIN from your secure credentials store.
 ```bash
 curl -X POST http://localhost:8000/api/v1/breakglass \
   -H "X-API-Key: $ADMIN_KEY" \
-  -H "X-Breakglass-Pin: ai-guardian-breakglass-2026" \
   -H "Content-Type: application/json" \
   -d '{
-    "reason": "Production security incident — attacker has access, isolating system NOW"
+    "reason": "Production security incident — attacker has access, isolating system NOW",
+    "pin": "ai-guardian-breakglass-2026"
   }'
 ```
 
@@ -157,7 +157,16 @@ curl "http://localhost:8000/api/v1/audit/logs?limit=100" \
 The default PIN (`ai-guardian-breakglass-2026`) must be changed in production.
 
 **To change:**
-There is no API for PIN rotation. In production, store the PIN hash in an HSM/KMS and override `_DEFAULT_PIN_HASH` in `ai_guardian/breakglass.py` (or add a `AI_GUARDIAN_BREAKGLASS_PIN_HASH` env var and read it from config).
+Use the PIN rotation endpoint (admin only, requires current PIN):
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/breakglass/pin/rotate" \
+  -H "X-API-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"current_pin": "ai-guardian-breakglass-2026", "new_pin": "your-new-pin-here"}'
+```
+
+The old PIN is immediately invalid after rotation; only the new PIN works. Rotation is logged as `breakglass_pin_rotated` in the audit log.
 
 **Best practices:**
 - Store breakglass PIN in a secrets manager (not in code)
