@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feature/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install all dependencies (app + test)
+        run: uv pip install --system -r requirements.txt
+
+      - name: Run full test suite
+        run: .venv/bin/python -m pytest tests/ -v --tb=short
+
+      - name: Run smoke tests
+        run: .venv/bin/python -m pytest tests/ -m smoke --tb=short
+
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --tag ai-guardian:test \
+            .
+
+      - name: Smoke-test container health
+        run: |
+          docker run -d --name ai-guardian-test \
+            -e AI_GUARDIAN_DB_PATH=/tmp/ai_guardian.db \
+            -e AI_GUARDIAN_BOOTSTRAP_KEYS=test-bootstrap-key \
+            -p 7430:8000 \
+            ai-guardian:test
+
+          # Wait for startup
+          sleep 8
+
+          # Healthcheck
+          docker exec ai-guardian-test wget -qO- http://localhost:8000/health && echo "HEALTH_OK"
+
+          # Verify persistence: insert a tenant via bootstrap
+          docker exec ai-guardian-test wget -qO- \
+            --header="X-Bootstrap-Key: test-bootstrap-key" \
+            -O /dev/null \
+            --post-data='{"name":"TestTenant","slug":"test-tenant","contact_email":"test@example.com","plan":"free"}' \
+            http://localhost:8000/api/v1/bootstrap/tenants \
+            && echo "BOOTSTRAP_OK"
+
+          # Cleanup
+          docker stop ai-guardian-test || true
+          docker rm ai-guardian-test || true

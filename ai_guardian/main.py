@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 import uuid
 from collections import deque
 from html import escape
+from pathlib import Path
 from threading import Lock
 import hashlib
 import hmac
@@ -44,6 +46,12 @@ from .enforcement import (
     approve_pending,
     deny_pending,
 )
+
+# Add scripts/ to path so we can import the migrations runner
+_scripts = Path(__file__).parent.parent / "scripts"
+if str(_scripts) not in sys.path:
+    sys.path.insert(0, str(_scripts))
+from run_migrations import run_sqlite, run_postgres
 from .interceptor import guardian, can_approve, resolve_pending_execution
 from .config import settings as app_settings
 
@@ -101,6 +109,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     service = GuardianService(app_settings)
     limiter = InMemoryRateLimiter(app_settings.rate_limit_per_minute)
+
+    # ── Phase 6: Startup — run migrations, wire DB-backed persistence ──
+    try:
+        if app_settings.database_url:
+            run_postgres(app_settings.database_url)
+        else:
+            run_sqlite(app_settings.database_path)
+    except Exception as exc:
+        logging.warning("Migration run failed (may be harmless if tables exist): %s", exc)
+
+    # Wire enforcement, breakglass, and audit log to the DB store
+    from . import enforcement, breakglass, audit as audit_module
+    enforcement.configure_store(service.store)
+    enforcement.load_from_db()
+    breakglass.configure_store(service.store)
+    breakglass.load_from_db()
+    audit_module.audit_log.configure_store(service.store)
+    audit_module.audit_log.load_from_db()
+    # ── End Phase 6 startup ───────────────────────────────────────────────
+
     app.add_middleware(RequestContextMiddleware, service_name=app_settings.service_name)
 
     def require_bootstrap_key(x_bootstrap_key: str = Header(...)) -> str:

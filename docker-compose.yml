@@ -1,8 +1,23 @@
-version: "3.9"
+# ─────────────────────────────────────────────────────────────
+# AI Guardian — Docker Compose (local development)
+# ─────────────────────────────────────────────────────────────
+# Usage:
+#   cp .env.example .env
+#   # edit .env — set AI_GUARDIAN_BOOTSTRAP_KEYS to a long random string
+#   docker compose up --build
+#
+# Then verify:
+#   curl http://localhost:8000/health
+#   docker compose exec ai-guardian python scripts/run_migrations.py --check
+# ─────────────────────────────────────────────────────────────
 
 services:
+
   ai-guardian:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
     container_name: ai-guardian
     restart: unless-stopped
     ports:
@@ -11,26 +26,39 @@ services:
       - .env
     environment:
       AI_GUARDIAN_DB_PATH: /app/data/ai_guardian.db
-      AI_GUARDIAN_DATABASE_URL: ${AI_GUARDIAN_DATABASE_URL:-}
-      PORT: 8000
+      AI_GUARDIAN_DATABASE_URL: ""      # leave empty for SQLite; set URL for Postgres
+      PORT: ${AI_GUARDIAN_PORT:-8000}
+      AI_GUARDIAN_BOOTSTRAP_KEYS: ${AI_GUARDIAN_BOOTSTRAP_KEYS}
+      AI_GUARDIAN_RATE_LIMIT_PER_MINUTE: ${AI_GUARDIAN_RATE_LIMIT_PER_MINUTE:-120}
+      AI_GUARDIAN_BLOCKED_DOMAINS: ${AI_GUARDIAN_BLOCKED_DOMAINS:-pastebin.com,mega.nz,transfer.sh}
+      AI_GUARDIAN_DEFAULT_ALLOWED_DOMAINS: ${AI_GUARDIAN_DEFAULT_ALLOWED_DOMAINS:-github.com,api.openai.com}
     volumes:
       - ai_guardian_data:/app/data
-    depends_on:
-      - postgres
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${AI_GUARDIAN_PORT:-8000}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
-  postgres:
-    image: postgres:16-alpine
-    container_name: ai-guardian-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-ai_guardian}
-      POSTGRES_USER: ${POSTGRES_USER:-ai_guardian}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - ai_guardian_postgres_data:/var/lib/postgresql/data
+  # Optional: Postgres for multi-instance deployments
+  # postgres:
+  #   image: postgres:16-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_DB: ${POSTGRES_DB:-ai_guardian}
+  #     POSTGRES_USER: ${POSTGRES_USER:-ai_guardian}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+  #   ports:
+  #     - "${POSTGRES_PORT:-5432}:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_guardian}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
 
 volumes:
   ai_guardian_data:
-  ai_guardian_postgres_data:
+  # postgres_data:

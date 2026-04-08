@@ -224,6 +224,209 @@ class SQLiteStore:
             ).fetchone()
         return _row_to_api_key(dict(row)) if row else None
 
+    # ── Pending approvals (durable) ─────────────────────────────────────────
+
+    def create_pending_approval(
+        self,
+        approval_id: str,
+        tenant_id: str,
+        agent_id: str,
+        action: str,
+        context: dict,
+        actor: str,
+        risk_score: int,
+        created_at: str,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO pending_approvals
+                   (approval_id, tenant_id, agent_id, action, context, actor,
+                    risk_score, created_at, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
+                (approval_id, tenant_id, agent_id, action, json.dumps(context),
+                 actor, risk_score, created_at),
+            )
+            self._conn.commit()
+
+    def get_pending_approval(self, approval_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM pending_approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_pending_approvals(
+        self, tenant_id: str, status: str | None = None
+    ) -> list[dict]:
+        with self._lock:
+            if status:
+                rows = self._conn.execute(
+                    "SELECT * FROM pending_approvals WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC",
+                    (tenant_id, status),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM pending_approvals WHERE tenant_id = ? ORDER BY created_at DESC",
+                    (tenant_id,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_pending_approval(
+        self,
+        approval_id: str,
+        status: str,
+        decision: str | None = None,
+        decided_by: str | None = None,
+        decided_at: str | None = None,
+    ) -> dict | None:
+        with self._lock:
+            self._conn.execute(
+                """UPDATE pending_approvals
+                   SET status = ?, decision = ?, decided_by = ?, decided_at = ?
+                   WHERE approval_id = ?""",
+                (status, decision, decided_by, decided_at, approval_id),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM pending_approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def count_pending_approvals(self, tenant_id: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as c FROM pending_approvals WHERE tenant_id = ? AND status = 'pending'",
+                (tenant_id,),
+            ).fetchone()
+        return dict(row)["c"] if row else 0
+
+    # ── Breakglass sessions (durable) ──────────────────────────────────────
+
+    def create_breakglass_session(
+        self,
+        breakglass_id: str,
+        tenant_id: str,
+        approved: bool,
+        created_at: str,
+        expires_at: str,
+        actor: str,
+        reason: str,
+        pin_hash: str,
+        actions_overridden: list[str],
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO breakglass_sessions
+                   (breakglass_id, tenant_id, approved, created_at, expires_at,
+                    actor, reason, pin_hash, actions_overridden, status, used)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0)""",
+                (breakglass_id, tenant_id, int(approved), created_at, expires_at,
+                 actor, reason, pin_hash, json.dumps(actions_overridden)),
+            )
+            self._conn.commit()
+
+    def get_breakglass_session(self, breakglass_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM breakglass_sessions WHERE breakglass_id = ?",
+                (breakglass_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_breakglass_session(
+        self,
+        breakglass_id: str,
+        status: str | None = None,
+        actions_overridden: list[str] | None = None,
+        used: bool | None = None,
+    ) -> dict | None:
+        with self._lock:
+            if status is not None:
+                self._conn.execute(
+                    "UPDATE breakglass_sessions SET status = ? WHERE breakglass_id = ?",
+                    (status, breakglass_id),
+                )
+            if actions_overridden is not None:
+                self._conn.execute(
+                    "UPDATE breakglass_sessions SET actions_overridden = ? WHERE breakglass_id = ?",
+                    (json.dumps(actions_overridden), breakglass_id),
+                )
+            if used is not None:
+                self._conn.execute(
+                    "UPDATE breakglass_sessions SET used = ? WHERE breakglass_id = ?",
+                    (int(used), breakglass_id),
+                )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM breakglass_sessions WHERE breakglass_id = ?",
+                (breakglass_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_breakglass_sessions(
+        self, tenant_id: str, status: str | None = None
+    ) -> list[dict]:
+        with self._lock:
+            if status:
+                rows = self._conn.execute(
+                    "SELECT * FROM breakglass_sessions WHERE tenant_id = ? AND status = ?",
+                    (tenant_id, status),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM breakglass_sessions WHERE tenant_id = ?",
+                    (tenant_id,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Audit log (durable) ────────────────────────────────────────────────
+
+    def load_audit_entries(self) -> dict[str, list[dict]]:
+        """Load all audit entries from DB, grouped by tenant_id.
+
+        Returns entries in in-memory format (no tenant_id field in each entry dict;
+        tenant is the dict key). Strips system columns (rowid) before returning.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM audit_log ORDER BY id ASC"
+            ).fetchall()
+        by_tenant: dict[str, list[dict]] = {}
+        for row in rows:
+            d = dict(row)
+            tenant = d.pop("tenant_id")  # extract tenant; strip from entry
+            # Parse JSON text fields
+            d["context"] = json.loads(d["context"]) if isinstance(d["context"], str) else (d.get("context") or {})
+            d["metadata"] = json.loads(d["metadata"]) if isinstance(d["metadata"], str) else (d.get("metadata") or {})
+            by_tenant.setdefault(tenant, []).append(d)
+        return by_tenant
+
+    def append_audit_entry(self, entry: dict, tenant_id: str) -> None:
+        """Persist a single audit entry to the database."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO audit_log
+                   (tenant_id, actor, action, decision, context, risk_score,
+                    breakglass_id, metadata, prev_hash, hash, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    tenant_id,
+                    entry["actor"],
+                    entry["action"],
+                    entry["decision"],
+                    json.dumps(entry.get("context", {})),
+                    entry.get("risk_score", 0),
+                    entry.get("breakglass_id"),
+                    json.dumps(entry.get("metadata", {})),
+                    entry["prev_hash"],
+                    entry["hash"],
+                    entry["timestamp"],
+                ),
+            )
+            self._conn.commit()
+
     def create_agent(self, tenant_id: str, agent_id: str, registration: AgentRegistration) -> AgentRecord:
         created_at = _utc_now()
         with self._lock:
@@ -424,6 +627,225 @@ class PostgresStore:
                 row = cur.fetchone()
             conn.commit()
         return _row_to_api_key(row) if row else None
+
+    # ── Pending approvals (durable) ─────────────────────────────────────────
+
+    def create_pending_approval(
+        self,
+        approval_id: str,
+        tenant_id: str,
+        agent_id: str,
+        action: str,
+        context: dict,
+        actor: str,
+        risk_score: int,
+        created_at: str,
+    ) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO pending_approvals
+                       (approval_id, tenant_id, agent_id, action, context, actor,
+                        risk_score, created_at, status)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')""",
+                    (approval_id, tenant_id, agent_id, action, json.dumps(context),
+                     actor, risk_score, created_at),
+                )
+            conn.commit()
+
+    def get_pending_approval(self, approval_id: str) -> dict | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM pending_approvals WHERE approval_id = %s",
+                    (approval_id,),
+                )
+                row = cur.fetchone()
+        return dict(row._asdict()) if row else None
+
+    def list_pending_approvals(
+        self, tenant_id: str, status: str | None = None
+    ) -> list[dict]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                if status:
+                    cur.execute(
+                        "SELECT * FROM pending_approvals WHERE tenant_id = %s AND status = %s ORDER BY created_at DESC",
+                        (tenant_id, status),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM pending_approvals WHERE tenant_id = %s ORDER BY created_at DESC",
+                        (tenant_id,),
+                    )
+                rows = cur.fetchall()
+        return [dict(r._asdict()) for r in rows]
+
+    def update_pending_approval(
+        self,
+        approval_id: str,
+        status: str,
+        decision: str | None = None,
+        decided_by: str | None = None,
+        decided_at: str | None = None,
+    ) -> dict | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE pending_approvals
+                       SET status = %s, decision = %s, decided_by = %s, decided_at = %s
+                       WHERE approval_id = %s""",
+                    (status, decision, decided_by, decided_at, approval_id),
+                )
+                cur.execute(
+                    "SELECT * FROM pending_approvals WHERE approval_id = %s",
+                    (approval_id,),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return dict(row._asdict()) if row else None
+
+    def count_pending_approvals(self, tenant_id: str) -> int:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) as c FROM pending_approvals WHERE tenant_id = %s AND status = 'pending'",
+                    (tenant_id,),
+                )
+                row = cur.fetchone()
+        return row[0] if row else 0
+
+    # ── Breakglass sessions (durable) ──────────────────────────────────────
+
+    def create_breakglass_session(
+        self,
+        breakglass_id: str,
+        tenant_id: str,
+        approved: bool,
+        created_at: str,
+        expires_at: str,
+        actor: str,
+        reason: str,
+        pin_hash: str,
+        actions_overridden: list[str],
+    ) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO breakglass_sessions
+                       (breakglass_id, tenant_id, approved, created_at, expires_at,
+                        actor, reason, pin_hash, actions_overridden, status, used)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0)""",
+                    (breakglass_id, tenant_id, int(approved), created_at, expires_at,
+                     actor, reason, pin_hash, json.dumps(actions_overridden)),
+                )
+            conn.commit()
+
+    def get_breakglass_session(self, breakglass_id: str) -> dict | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM breakglass_sessions WHERE breakglass_id = %s",
+                    (breakglass_id,),
+                )
+                row = cur.fetchone()
+        return dict(row._asdict()) if row else None
+
+    def update_breakglass_session(
+        self,
+        breakglass_id: str,
+        status: str | None = None,
+        actions_overridden: list[str] | None = None,
+        used: bool | None = None,
+    ) -> dict | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                if status is not None:
+                    cur.execute(
+                        "UPDATE breakglass_sessions SET status = %s WHERE breakglass_id = %s",
+                        (status, breakglass_id),
+                    )
+                if actions_overridden is not None:
+                    cur.execute(
+                        "UPDATE breakglass_sessions SET actions_overridden = %s WHERE breakglass_id = %s",
+                        (json.dumps(actions_overridden), breakglass_id),
+                    )
+                if used is not None:
+                    cur.execute(
+                        "UPDATE breakglass_sessions SET used = %s WHERE breakglass_id = %s",
+                        (int(used), breakglass_id),
+                    )
+                cur.execute(
+                    "SELECT * FROM breakglass_sessions WHERE breakglass_id = %s",
+                    (breakglass_id,),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return dict(row._asdict()) if row else None
+
+    def list_breakglass_sessions(
+        self, tenant_id: str, status: str | None = None
+    ) -> list[dict]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                if status:
+                    cur.execute(
+                        "SELECT * FROM breakglass_sessions WHERE tenant_id = %s AND status = %s",
+                        (tenant_id, status),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM breakglass_sessions WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                rows = cur.fetchall()
+        return [dict(r._asdict()) for r in rows]
+
+    # ── Audit log (durable) ────────────────────────────────────────────────
+
+    def load_audit_entries(self) -> dict[str, list[dict]]:
+        """Load all audit entries from DB, grouped by tenant_id.
+
+        Returns entries in in-memory format (no tenant_id field in each entry dict;
+        tenant is the dict key).
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM audit_log ORDER BY id ASC")
+                rows = cur.fetchall()
+        by_tenant: dict[str, list[dict]] = {}
+        for row in rows:
+            d = dict(row._asdict())
+            tenant = d.pop("tenant_id")  # extract tenant; strip from entry
+            d["context"] = json.loads(d["context"]) if isinstance(d["context"], str) else (d.get("context") or {})
+            d["metadata"] = json.loads(d["metadata"]) if isinstance(d["metadata"], str) else (d.get("metadata") or {})
+            by_tenant.setdefault(tenant, []).append(d)
+        return by_tenant
+
+    def append_audit_entry(self, entry: dict, tenant_id: str) -> None:
+        """Persist a single audit entry to the database."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO audit_log
+                       (tenant_id, actor, action, decision, context, risk_score,
+                        breakglass_id, metadata, prev_hash, hash, timestamp)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        tenant_id,
+                        entry["actor"],
+                        entry["action"],
+                        entry["decision"],
+                        json.dumps(entry.get("context", {})),
+                        entry.get("risk_score", 0),
+                        entry.get("breakglass_id"),
+                        json.dumps(entry.get("metadata", {})),
+                        entry["prev_hash"],
+                        entry["hash"],
+                        entry["timestamp"],
+                    ),
+                )
+            conn.commit()
 
     def create_agent(self, tenant_id: str, agent_id: str, registration: AgentRegistration) -> AgentRecord:
         created_at = _utc_now()
