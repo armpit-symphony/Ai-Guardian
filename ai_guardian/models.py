@@ -118,3 +118,47 @@ class AccessProfile(BaseModel):
     tenant: TenantRecord
     api_key: ApiKeyRecord
     capabilities: list[str]
+
+
+class BreakglassCreate(BaseModel):
+    reason: str = Field(..., min_length=10)
+    pin: str = Field(..., min_length=6)
+    duration_minutes: int = Field(default=15, ge=1, le=60)
+
+
+class BreakglassRecord(BaseModel):
+    breakglass_id: str
+    approved: bool
+    created_at: datetime
+    expires_at: datetime
+    actor: str
+    reason: str
+    tenant_id: str
+    actions_overridden: list[str]
+    status: Literal["active", "used", "expired", "revoked"]
+
+
+class BreakglassResponse(BaseModel):
+    breakglass_id: str
+    approved: bool
+    expires_at: datetime
+    actor: str
+
+
+class AuditRecord(BaseModel):
+    id: int
+    timestamp: datetime
+    actor: str
+    action: str
+    decision: str
+    context: dict
+    risk_score: int
+    breakglass_id: str | None
+    hash: str
+    prev_hash: str
+
+
+class AuditVerifyResponse(BaseModel):
+    valid: bool
+    total_entries: int
+    errors: list[str]

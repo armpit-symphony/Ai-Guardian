@@ -14,9 +14,27 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
 from .config import Settings, get_settings
-from .models import AccessContext, AgentRegistration, MonitorRequest, TenantCreate
+from .models import (
+    AccessContext,
+    AgentRegistration,
+    MonitorRequest,
+    TenantCreate,
+    BreakglassCreate,
+    BreakglassResponse,
+    AuditRecord,
+    AuditVerifyResponse,
+)
 from .security import constant_time_contains
 from .service import GuardianService
+from .breakglass import (
+    create_session,
+    validate_session,
+    use_session,
+    revoke_session,
+    get_session,
+    list_active_sessions,
+)
+from .audit import audit_log
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -198,6 +216,169 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/verify/{proof_hash}")
     def verify_proof(proof_hash: str, access: AccessContext = Depends(require_access)):
         return {"valid": service.verify_proof(access, proof_hash)}
+
+    # ─── Breakglass Endpoints ───
+
+    @app.post("/api/v1/breakglass", response_model=BreakglassResponse, tags=["Guardian"])
+    def create_breakglass(
+        payload: BreakglassCreate,
+        access: AccessContext = Depends(require_access),
+    ):
+        """
+        Create a breakglass session for emergency override.
+        Requires PIN + business justification (min 10 chars).
+        Default expiry: 15 minutes.
+        """
+        if access.role not in ("admin",):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required for breakglass.")
+
+        session = create_session(
+            tenant_id=access.tenant_id,
+            actor=access.key_id,
+            reason=payload.reason,
+            pin=payload.pin,
+            duration_minutes=payload.duration_minutes,
+        )
+        if not session:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid PIN or reason too short (min 10 chars).")
+
+        audit_log.append(
+            tenant_id=access.tenant_id,
+            actor=access.key_id,
+            action="breakglass_create",
+            decision="breakglass_used",
+            context={"reason": payload.reason},
+            risk_score=100,
+            breakglass_id=session.breakglass_id,
+        )
+
+        return BreakglassResponse(
+            breakglass_id=session.breakglass_id,
+            approved=session.approved,
+            expires_at=session.expires_at,
+            actor=session.actor,
+        )
+
+    @app.post("/api/v1/breakglass/{breakglass_id}/revoke", tags=["Guardian"])
+    def revoke_breakglass(
+        breakglass_id: str,
+        access: AccessContext = Depends(require_access),
+    ):
+        """Revoke an active breakglass session."""
+        if access.role not in ("admin",):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required.")
+
+        session = get_session(breakglass_id)
+        if not session or session.tenant_id != access.tenant_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Breakglass session not found.")
+
+        success = revoke_session(breakglass_id)
+        if success:
+            audit_log.append(
+                tenant_id=access.tenant_id,
+                actor=access.key_id,
+                action="breakglass_revoke",
+                decision="breakglass_used",
+                context={"breakglass_id": breakglass_id},
+                risk_score=100,
+                breakglass_id=breakglass_id,
+            )
+        return {"status": "revoked" if success else "failed", "breakglass_id": breakglass_id}
+
+    @app.get("/api/v1/breakglass", tags=["Guardian"])
+    def list_breakglass_sessions(access: AccessContext = Depends(require_access)):
+        """List all active breakglass sessions for the tenant."""
+        if access.role not in ("admin",):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required.")
+        sessions = list_active_sessions(access.tenant_id)
+        return [session._asdict() for session in sessions]
+
+    @app.post("/api/v1/breakglass/{breakglass_id}/use", tags=["Guardian"])
+    def use_breakglass_session(
+        breakglass_id: str,
+        action: str,
+        access: AccessContext = Depends(require_access),
+    ):
+        """
+        Use an active breakglass session to override for a specific action.
+        Records the use in the immutable audit log.
+        """
+        session = get_session(breakglass_id)
+        if not session or session.tenant_id != access.tenant_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Breakglass session not found.")
+
+        is_valid, reason = validate_session(breakglass_id)
+        if not is_valid:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+        success = use_session(breakglass_id, action)
+        audit_log.append(
+            tenant_id=access.tenant_id,
+            actor=access.key_id,
+            action=f"breakglass_override:{action}",
+            decision="breakglass_used",
+            context={"breakglass_id": breakglass_id, "action": action},
+            risk_score=100,
+            breakglass_id=breakglass_id,
+        )
+
+        return {"status": "used" if success else "failed", "breakglass_id": breakglass_id, "action": action}
+
+    # ─── Audit Log Endpoints ───
+
+    @app.get("/api/v1/audit/logs", response_model=list[AuditRecord], tags=["Audit"])
+    def get_audit_logs(
+        limit: int = Query(default=100, ge=1, le=1000),
+        access: AccessContext = Depends(require_access),
+    ):
+        """Get governance audit log entries (breakglass, overrides, admin actions)."""
+        if access.role not in ("admin", "viewer"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+        entries = audit_log.get_recent(access.tenant_id, limit)
+        return entries
+
+    @app.get("/api/v1/audit/verify", response_model=AuditVerifyResponse, tags=["Audit"])
+    def verify_audit_integrity(access: AccessContext = Depends(require_access)):
+        """Verify hash-chain integrity of the governance audit log."""
+        if access.role not in ("admin",):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required.")
+        valid, errors = audit_log.verify_integrity(access.tenant_id)
+        return AuditVerifyResponse(
+            valid=valid,
+            total_entries=audit_log.count(access.tenant_id),
+            errors=errors,
+        )
+
+    @app.get("/api/v1/audit/export", tags=["Audit"])
+    def export_audit_log(
+        format: str = Query(default="json", pattern="^(json|csv)$"),
+        limit: int = Query(default=500, ge=1, le=5000),
+        access: AccessContext = Depends(require_access),
+    ):
+        """Export governance audit log as JSON or CSV."""
+        if access.role not in ("admin", "viewer"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+        entries = audit_log.get_recent(access.tenant_id, limit)
+
+        if format == "json":
+            return entries
+
+        # CSV export
+        if not entries:
+            return Response(content="", media_type="text/csv")
+        header = "id,timestamp,actor,action,decision,context,risk_score,breakglass_id,hash,prev_hash\n"
+        rows = []
+        for e in entries:
+            rows.append(
+                f"{e['id']},{e['timestamp']},{e['actor']},{e['action']},{e['decision']},"
+                f'"{str(e.get("context", {}))}"'
+            )
+        body = header + "\n".join(rows)
+        return Response(
+            content=body,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="ai-guardian-audit-log.csv"'},
+        )
 
     @app.get("/dashboard/login")
     def dashboard_login_page(error: str | None = Query(default=None)) -> Response:
