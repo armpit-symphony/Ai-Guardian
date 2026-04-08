@@ -381,15 +381,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current PIN is incorrect.")
 
     @app.post("/api/v1/breakglass/{breakglass_id}/use", tags=["Guardian"])
-    def use_breakglass_session(
+    async def use_breakglass_session(
         breakglass_id: str,
-        action: str,
+        request: Request,
         access: AccessContext = Depends(require_access),
     ):
         """
         Use an active breakglass session to override for a specific action.
-        Records the use in the immutable audit log.
+        Requires confirmation via query param: ?action=...&confirm=BREAKGLASS
+        Or via request body: {"action": "...", "confirm": "BREAKGLASS"}
         """
+        import json
+        action = request.query_params.get("action", "")
+        confirm = request.query_params.get("confirm", "")
+
+        try:
+            body_data = await request.json()
+            action = body_data.get("action", action)
+            confirm = body_data.get("confirm", confirm)
+        except Exception:
+            pass
+
+        if confirm != "BREAKGLASS":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Missing or invalid confirmation. Add "&confirm=BREAKGLASS" to the query string, '
+                       'or send body {"action": "...", "confirm": "BREAKGLASS"}',
+            )
+
         session = get_session(breakglass_id)
         if not session or session.tenant_id != access.tenant_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Breakglass session not found.")
@@ -398,6 +417,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not is_valid:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
 
+        # action already extracted from query_params + body above
         success = use_session(breakglass_id, action)
         audit_log.append(
             tenant_id=access.tenant_id,
@@ -515,13 +535,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/audit/logs", response_model=list[AuditRecord], tags=["Audit"])
     def get_audit_logs(
         limit: int = Query(default=100, ge=1, le=1000),
+        decision: str | None = Query(default=None, pattern="^(allowed|blocked|pending_approval|breakglass_used|pin_rotated)$"),
         access: AccessContext = Depends(require_access),
     ):
-        """Get governance audit log entries (breakglass, overrides, admin actions)."""
+        """Get governance audit log entries (breakglass, overrides, admin actions).
+
+        Filter by decision type:
+          ?decision=blocked    — only blocked actions
+          ?decision=allowed     — only allowed actions
+          ?decision=pending_approval
+        """
         if access.role not in ("admin", "viewer"):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
         entries = audit_log.get_recent(access.tenant_id, limit)
+        if decision:
+            entries = [e for e in entries if e.get("decision") == decision]
         return entries
+
+    @app.get("/api/v1/audit/blocked", response_model=list[AuditRecord], tags=["Audit"])
+    def get_blocked_logs(
+        limit: int = Query(default=100, ge=1, le=1000),
+        access: AccessContext = Depends(require_access),
+    ):
+        """Get all blocked actions — convenience alias for ?decision=blocked."""
+        if access.role not in ("admin", "viewer"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+        entries = audit_log.get_recent(access.tenant_id, limit)
+        return [e for e in entries if e.get("decision") == "blocked"]
 
     @app.get("/api/v1/audit/verify", response_model=AuditVerifyResponse, tags=["Audit"])
     def verify_audit_integrity(access: AccessContext = Depends(require_access)):
@@ -534,6 +574,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             total_entries=audit_log.count(access.tenant_id),
             errors=errors,
         )
+
+    @app.get("/api/v1/status", tags=["Guardian"])
+    def get_operational_status(access: AccessContext = Depends(require_access)):
+        """Operational status dashboard — queue depth, block counts, breakglass state, audit integrity."""
+        if access.role not in ("admin",):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required.")
+        pending_list = get_pending_for_tenant(access.tenant_id)
+        pending_count = len(pending_list)
+        blocked_list = [e for e in audit_log.get_recent(access.tenant_id, 1000) if e.get("decision") == "blocked"]
+        blocked_count = len(blocked_list)
+        active_breakglass = list_active_sessions(access.tenant_id)
+        active_bg_count = len(active_breakglass)
+        audit_valid, audit_errors = audit_log.verify_integrity(access.tenant_id)
+        return {
+            "pending_approvals": pending_count,
+            "blocked_today": blocked_count,
+            "breakglass_active": active_bg_count,
+            "audit_integrity_valid": audit_valid,
+            "audit_errors": audit_errors or [],
+            "active_breakglass_sessions": [
+                {"breakglass_id": s.breakglass_id, "expires_at": s.expires_at.isoformat()}
+                for s in active_breakglass
+            ],
+        }
 
     @app.get("/api/v1/audit/export", tags=["Audit"])
     def export_audit_log(

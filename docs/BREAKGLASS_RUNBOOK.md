@@ -80,10 +80,10 @@ Response:
 
 ### Phase 3: Execute the Override
 
-Use the breakglass to override the blocked action:
+Use the breakglass to override the blocked action (requires confirmation):
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/breakglass/bg_xyz789.../use?action=delete_all_files" \
+curl -X POST "http://localhost:8000/api/v1/breakglass/bg_xyz789.../use?action=delete_all_files&confirm=BREAKGLASS" \
   -H "X-API-Key: $ADMIN_KEY"
 ```
 

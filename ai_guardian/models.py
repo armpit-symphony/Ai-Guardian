@@ -192,3 +192,9 @@ class PendingApprovalRecord(BaseModel):
 
 class ApprovalDecideRequest(BaseModel):
     decision: Literal["approve", "deny"]
+
+
+class BreakglassUseRequest(BaseModel):
+    """Confirm breakglass use with explicit confirmation field and action."""
+    action: str = Field(..., min_length=2, max_length=400)
+    confirm: str = Field(..., pattern="^BREAKGLASS$")

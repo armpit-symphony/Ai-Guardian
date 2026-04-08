@@ -80,7 +80,7 @@ def test_breakglass_use_one_time(client: TestClient, admin_key: str):
     bg_id = r.json()["breakglass_id"]
 
     r = client.post(
-        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files",
+        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
     assert r.status_code == 200
@@ -102,13 +102,13 @@ def test_breakglass_use_cannot_be_reused(client: TestClient, admin_key: str):
 
     # First use
     client.post(
-        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files",
+        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
 
     # Second use → rejected
     r = client.post(
-        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files",
+        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
     assert r.status_code == 400
@@ -155,7 +155,7 @@ def test_breakglass_use_after_revoke_fails(client: TestClient, admin_key: str):
     )
 
     r = client.post(
-        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files",
+        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
     assert r.status_code == 400
@@ -165,7 +165,7 @@ def test_breakglass_use_after_revoke_fails(client: TestClient, admin_key: str):
 @pytest.mark.integration
 def test_breakglass_nonexistent_id_fails(client: TestClient, admin_key: str):
     r = client.post(
-        "/api/v1/breakglass/fake-id/use?action=delete_all_files",
+        "/api/v1/breakglass/fake-id/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
     assert r.status_code in (400, 404)
@@ -189,13 +189,13 @@ def test_smoke_breakglass_lifecycle(client: TestClient, admin_key: str):
     bg_id = r.json()["breakglass_id"]
 
     r = client.post(
-        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files",
+        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
     assert r.json()["status"] == "used"
 
     r = client.post(
-        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files",
+        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
     assert r.status_code == 400

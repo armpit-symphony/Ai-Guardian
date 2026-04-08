@@ -93,7 +93,7 @@ def test_audit_contains_all_six_decision_types(
     )
     bg_id = r.json()["breakglass_id"]
     client.post(
-        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files",
+        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
 
@@ -156,7 +156,7 @@ def test_breakglass_actions_in_audit(
     bg_id = r.json()["breakglass_id"]
 
     client.post(
-        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files",
+        f"/api/v1/breakglass/{bg_id}/use?action=delete_all_files&confirm=BREAKGLASS",
         headers={"x-api-key": admin_key},
     )
 

@@ -32,6 +32,55 @@ No auth required.
 
 ---
 
+### Operational Status
+
+```
+GET /api/v1/status
+```
+**Roles:** admin
+
+Returns operational status: queue depth, block counts, breakglass state, audit integrity.
+
+**Response `200`:**
+```json
+{
+  "pending_approvals": 3,
+  "blocked_today": 12,
+  "breakglass_active": 1,
+  "audit_integrity_valid": true,
+  "audit_errors": [],
+  "active_breakglass_sessions": [
+    {"breakglass_id": "bg_abc...", "expires_at": "2026-04-08T22:30:00Z"}
+  ]
+}
+```
+
+### Audit Log
+
+```
+GET /api/v1/audit/logs?limit={100}&decision={allowed|blocked|pending_approval}
+```
+**Roles:** admin, viewer
+
+Returns hash-chained audit entries for your tenant, newest first.
+Use `?decision=blocked` to see only blocked actions, `?decision=allowed` for allowed, etc.
+
+```
+GET /api/v1/audit/blocked?limit={100}
+```
+**Roles:** admin, viewer
+
+Shortcut for `?decision=blocked` — returns all blocked actions.
+
+---
+```
+GET /api/v1/audit/verify
+```
+**Roles:** admin
+
+Verifies hash chain integrity.
+
+---
 ### Bootstrap Tenant *(bootstrap — no X-API-Key)*
 
 ```
@@ -267,18 +316,22 @@ Header: `X-Breakglass-Pin: ai-guardian-breakglass-2026`
 ---
 
 ```
-POST /api/v1/breakglass/{breakglass_id}/use?action={action}
+POST /api/v1/breakglass/{breakglass_id}/use?action={action}&confirm=BREAKGLASS
 ```
 **Roles:** admin
 
-One-time use. After use, the session is permanently blocked.
+One-time use. Requires confirmation token `BREAKGLASS` to prevent accidental triggers.
+
+**Query parameters:**
+- `action` — the action to override (e.g. `delete_all_files`)
+- `confirm` — must be `BREAKGLASS` (exact, uppercase)
 
 **Response `200`:**
 ```json
 {"breakglass_used": true, "action": "delete_all_files"}
 ```
 
-**Response `400`** — already used or revoked:
+**Response `400`** — already used, revoked, or confirmation missing:
 ```json
 {"detail": "Breakglass session has already been used"}
 ```
@@ -329,14 +382,22 @@ Rotates the breakglass PIN. Requires the current PIN and the new PIN. After rota
 ### Audit Log
 
 ```
-GET /api/v1/audit/logs?limit={100}
+GET /api/v1/audit/logs?limit={100}&decision={allowed|blocked|pending_approval}
 ```
 **Roles:** admin, viewer
 
 Returns hash-chained audit entries for your tenant, newest first.
+Use `?decision=blocked` to see only blocked actions, `?decision=allowed` for allowed, etc.
 
 ---
+```
+GET /api/v1/audit/blocked?limit={100}
+```
+**Roles:** admin, viewer
 
+Shortcut for `?decision=blocked` — returns all blocked actions.
+
+---
 ```
 GET /api/v1/audit/verify
 ```

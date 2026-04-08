@@ -155,19 +155,40 @@ class GuardianInterceptor:
         risk_score = self._calc_risk(request, findings)
 
         # ── Step 4b: SSRF — hard-block internal/private URLs ───────────────
+        # Collect all URL-like values from source_url field AND from context recursively
+        _ssrf_blocklist = (
+            "localhost", "127.0.0.1", "169.254.169.254",
+            "0.0.0.0", "::1", "metadata.google.internal", ".internal",
+        )
+
+        def _extract_urls(obj) -> list[str]:
+            """Recursively extract URL strings from any object."""
+            urls = []
+            if isinstance(obj, str) and ("://" in obj or obj.startswith("http")):
+                urls.append(obj)
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    urls.extend(_extract_urls(v))
+            elif isinstance(obj, (list, tuple)):
+                for v in obj:
+                    urls.extend(_extract_urls(v))
+            return urls
+
+        all_urls = []
         source_url = getattr(request, 'source_url', None)
         if source_url:
+            all_urls.append(source_url)
+        all_urls.extend(_extract_urls(getattr(request, 'context', None) or {}))
+
+        for url in all_urls:
             try:
                 from urllib.parse import urlparse
-                raw = urlparse(source_url).netloc.lower().split("@")[-1]
-                # Handle IPv6: [::1]:8080 → extract ::1 from brackets
+                raw = urlparse(url).netloc.lower().split("@")[-1]
                 if raw.startswith("["):
                     domain = raw.split("]")[0].lstrip("[")
                 else:
                     domain = raw.split(":")[0]
-                for pat in ("localhost", "127.0.0.1", "169.254.169.254",
-                           "0.0.0.0", "::1", "metadata.google.internal",
-                           ".internal"):
+                for pat in _ssrf_blocklist:
                     if pat in domain:
                         audit_log.append(
                             tenant_id=access.tenant_id,
@@ -176,7 +197,7 @@ class GuardianInterceptor:
                             decision="blocked",
                             context={
                                 "reason": "SSRF protection: internal URL not allowed",
-                                "source_url": source_url,
+                                "source_url": url,
                                 "agent_id": request.agent_id,
                             },
                             risk_score=100,
