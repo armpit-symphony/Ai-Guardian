@@ -150,9 +150,11 @@ class GuardianService:
 
         # Step 3: Persist evaluation result — linked to monitor_events row.
         # Written AFTER evaluation; isolated from raw event persistence.
+        evaluation_result_id: uuid.UUID | None = None
         try:
+            evaluation_result_id = uuid.uuid4()
             self.store.create_evaluation_result(
-                result_id=uuid.uuid4(),
+                result_id=evaluation_result_id,
                 monitor_event_id=event_id,
                 tenant_id=access.tenant_id,
                 decision=decision,
@@ -164,6 +166,43 @@ class GuardianService:
             )
         except Exception:
             self.logger.exception("Failed to persist evaluation result — continuing")
+
+        # Step 4: Persist normalized findings — linked to both monitor_events and evaluation_results.
+        # Written after both layers are committed. Each finding is independent.
+        if findings:
+            try:
+                now = datetime.now(timezone.utc)
+                normalized = [
+                    {
+                        "type": "policy_finding",
+                        "severity": f.severity,
+                        "title": f.message[:120],
+                        "description": f.message,
+                        "source_finding_id": f.code,
+                        "resource": request.source_url,
+                        "context": {"action": request.action, "agent_id": request.agent_id},
+                        "evidence": [],
+                        "raw_payload": {
+                            "decision": decision,
+                            "proof": proof,
+                            "finding_code": f.code,
+                            "finding_severity": f.severity,
+                            "finding_message": f.message,
+                        },
+                    }
+                    for f in findings
+                ]
+                self.store.create_findings(
+                    tenant_id=access.tenant_id,
+                    monitor_event_id=event_id,
+                    evaluation_result_id=evaluation_result_id,
+                    findings=normalized,
+                    source="ai-guardian",
+                    raw_payload=request.context or {},
+                    created_at=now,
+                )
+            except Exception:
+                self.logger.exception("Failed to persist normalized findings — continuing")
 
         event = self.store.create_event(
             tenant_id=access.tenant_id,

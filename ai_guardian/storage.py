@@ -100,6 +100,27 @@ CREATE TABLE IF NOT EXISTS evaluation_results (
     evaluator_name      TEXT,
     created_at          TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS findings (
+    id                   TEXT PRIMARY KEY,
+    tenant_id            TEXT NOT NULL,
+    monitor_event_id     TEXT NOT NULL,
+    evaluation_result_id TEXT,
+    source               TEXT NOT NULL,
+    source_finding_id    TEXT,
+    type                 TEXT NOT NULL,
+    severity             TEXT NOT NULL,
+    confidence           REAL,
+    title                TEXT NOT NULL,
+    description          TEXT,
+    service              TEXT,
+    resource             TEXT,
+    evidence             TEXT NOT NULL DEFAULT '[]',
+    context              TEXT NOT NULL DEFAULT '{}',
+    raw_payload          TEXT NOT NULL DEFAULT '{}',
+    first_seen_at        TEXT NOT NULL,
+    created_at            TEXT NOT NULL
+);
 """
 
 POSTGRES_SCHEMA = """
@@ -170,6 +191,27 @@ CREATE TABLE IF NOT EXISTS evaluation_results (
     policy_version      TEXT        NULL,
     evaluator_name      TEXT        NULL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS findings (
+    id                   UUID        PRIMARY KEY,
+    tenant_id            UUID        NOT NULL,
+    monitor_event_id     UUID        NOT NULL REFERENCES monitor_events(id) ON DELETE CASCADE,
+    evaluation_result_id UUID        NULL REFERENCES evaluation_results(id) ON DELETE SET NULL,
+    source               TEXT        NOT NULL,
+    source_finding_id    TEXT        NULL,
+    type                 TEXT        NOT NULL,
+    severity             TEXT        NOT NULL,
+    confidence           NUMERIC     NULL,
+    title                TEXT        NOT NULL,
+    description          TEXT        NULL,
+    service              TEXT        NULL,
+    resource             TEXT        NULL,
+    evidence             JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    context              JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    raw_payload          JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    first_seen_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
 
@@ -452,6 +494,85 @@ class SQLiteStore:
                     reasons=json.loads(d["reasons"]),
                     policy_version=d["policy_version"],
                     evaluator_name=d["evaluator_name"],
+                    created_at=_to_datetime(d["created_at"]),
+                )
+            )
+        return records
+
+    def create_findings(
+        self,
+        tenant_id: str,
+        monitor_event_id: uuid.UUID,
+        evaluation_result_id: uuid.UUID | None,
+        findings: list[dict[str, Any]],
+        source: str,
+        raw_payload: dict[str, Any],
+        created_at: datetime,
+    ) -> None:
+        """Persist zero or more normalized findings. Called after evaluation_results are written."""
+        if not findings:
+            return
+        rows = []
+        now_iso = created_at.isoformat()
+        for finding in findings:
+            rows.append((
+                str(uuid.uuid4()),
+                tenant_id,
+                str(monitor_event_id),
+                str(evaluation_result_id) if evaluation_result_id else None,
+                source,
+                finding.get("source_finding_id"),
+                finding.get("type", "policy_finding"),
+                finding.get("severity", "medium"),
+                finding.get("confidence"),
+                finding.get("title", finding.get("message", "")),
+                finding.get("description"),
+                finding.get("service"),
+                finding.get("resource"),
+                json.dumps(finding.get("evidence", [])),
+                json.dumps(finding.get("context", {})),
+                json.dumps(finding.get("raw_payload", raw_payload)),
+                now_iso,
+                now_iso,
+            ))
+        with self._lock:
+            self._conn.executemany(
+                "INSERT INTO findings (id, tenant_id, monitor_event_id, evaluation_result_id, source, source_finding_id, type, severity, confidence, title, description, service, resource, evidence, context, raw_payload, first_seen_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            self._conn.commit()
+
+    def list_findings(self, tenant_id: str, limit: int = 20) -> list:
+        """Read normalized findings for a tenant, newest first."""
+        from .models import FindingRecord
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM findings WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_id, limit),
+            ).fetchall()
+        records = []
+        for row in rows:
+            d = dict(row)
+            records.append(
+                FindingRecord(
+                    id=uuid.UUID(d["id"]),
+                    tenant_id=d["tenant_id"],
+                    monitor_event_id=uuid.UUID(d["monitor_event_id"]),
+                    evaluation_result_id=uuid.UUID(d["evaluation_result_id"]) if d["evaluation_result_id"] else None,
+                    source=d["source"],
+                    source_finding_id=d["source_finding_id"],
+                    type=d["type"],
+                    severity=d["severity"],
+                    confidence=d["confidence"],
+                    title=d["title"],
+                    description=d["description"],
+                    service=d["service"],
+                    resource=d["resource"],
+                    evidence=json.loads(d["evidence"]),
+                    context=json.loads(d["context"]),
+                    raw_payload=json.loads(d["raw_payload"]),
+                    first_seen_at=_to_datetime(d["first_seen_at"]),
                     created_at=_to_datetime(d["created_at"]),
                 )
             )
@@ -748,6 +869,85 @@ class PostgresStore:
                     reasons=d["reasons"] if isinstance(d["reasons"], list) else json.loads(d["reasons"]),
                     policy_version=d["policy_version"],
                     evaluator_name=d["evaluator_name"],
+                    created_at=_to_datetime(d["created_at"]),
+                )
+            )
+        return records
+
+    def create_findings(
+        self,
+        tenant_id: str,
+        monitor_event_id: uuid.UUID,
+        evaluation_result_id: uuid.UUID | None,
+        findings: list[dict[str, Any]],
+        source: str,
+        raw_payload: dict[str, Any],
+        created_at: datetime,
+    ) -> None:
+        """Persist zero or more normalized findings. Called after evaluation_results are written."""
+        if not findings:
+            return
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                for finding in findings:
+                    cur.execute(
+                        "INSERT INTO findings (id, tenant_id, monitor_event_id, evaluation_result_id, source, source_finding_id, type, severity, confidence, title, description, service, resource, evidence, context, raw_payload, first_seen_at, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (
+                            str(uuid.uuid4()),
+                            tenant_id,
+                            str(monitor_event_id),
+                            str(evaluation_result_id) if evaluation_result_id else None,
+                            source,
+                            finding.get("source_finding_id"),
+                            finding.get("type", "policy_finding"),
+                            finding.get("severity", "medium"),
+                            finding.get("confidence"),
+                            finding.get("title", finding.get("message", "")),
+                            finding.get("description"),
+                            finding.get("service"),
+                            finding.get("resource"),
+                            json.dumps(finding.get("evidence", [])),
+                            json.dumps(finding.get("context", {})),
+                            json.dumps(finding.get("raw_payload", raw_payload)),
+                            created_at.isoformat(),
+                            created_at.isoformat(),
+                        ),
+                    )
+            conn.commit()
+
+    def list_findings(self, tenant_id: str, limit: int = 20) -> list:
+        """Read normalized findings for a tenant, newest first."""
+        from .models import FindingRecord
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM findings WHERE tenant_id = %s ORDER BY created_at DESC LIMIT %s",
+                    (tenant_id, limit),
+                )
+                rows = cur.fetchall()
+        records = []
+        for row in rows:
+            d = dict(row)
+            records.append(
+                FindingRecord(
+                    id=d["id"],
+                    tenant_id=d["tenant_id"],
+                    monitor_event_id=d["monitor_event_id"],
+                    evaluation_result_id=d["evaluation_result_id"],
+                    source=d["source"],
+                    source_finding_id=d["source_finding_id"],
+                    type=d["type"],
+                    severity=d["severity"],
+                    confidence=float(d["confidence"]) if d["confidence"] is not None else None,
+                    title=d["title"],
+                    description=d["description"],
+                    service=d["service"],
+                    resource=d["resource"],
+                    evidence=d["evidence"] if isinstance(d["evidence"], list) else json.loads(d["evidence"]),
+                    context=d["context"] if isinstance(d["context"], dict) else json.loads(d["context"]),
+                    raw_payload=d["raw_payload"] if isinstance(d["raw_payload"], dict) else json.loads(d["raw_payload"]),
+                    first_seen_at=_to_datetime(d["first_seen_at"]),
                     created_at=_to_datetime(d["created_at"]),
                 )
             )

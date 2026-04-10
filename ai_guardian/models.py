@@ -152,3 +152,28 @@ class EvaluationResultRecord(BaseModel):
     policy_version: str | None
     evaluator_name: str | None
     created_at: datetime
+
+
+class FindingRecord(BaseModel):
+    """
+    Normalized finding — unified schema for all product sources.
+    Written after monitor_events and evaluation_results are committed.
+    """
+    id: uuid.UUID
+    tenant_id: str
+    monitor_event_id: uuid.UUID
+    evaluation_result_id: uuid.UUID | None
+    source: str
+    source_finding_id: str | None
+    type: str
+    severity: str
+    confidence: float | None
+    title: str
+    description: str | None
+    service: str | None
+    resource: str | None
+    evidence: list[dict[str, Any]]
+    context: dict[str, Any]
+    raw_payload: dict[str, Any]
+    first_seen_at: datetime
+    created_at: datetime

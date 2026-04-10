@@ -182,6 +182,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Read Guardian evaluation decisions. Newest first."""
         return service.store.list_evaluation_results(tenant_id=access.tenant_id, limit=limit)
 
+    @app.get("/api/v1/findings")
+    def list_findings(
+        limit: int = Query(default=20, ge=1, le=200),
+        access: AccessContext = Depends(require_access),
+    ):
+        """Read normalized findings across all sources. Newest first."""
+        return service.store.list_findings(tenant_id=access.tenant_id, limit=limit)
+
     @app.get("/api/v1/events")
     def list_events(
         limit: int = Query(default=50, ge=1, le=200),
