@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import secrets
+import uuid
 from csv import DictWriter
+from datetime import datetime, timezone
 from io import StringIO
 
 from .config import Settings
@@ -114,6 +116,28 @@ class GuardianService:
         if not agent:
             raise ValueError(f"Unknown agent_id '{request.agent_id}'. Register it before monitoring.")
 
+        # Step 1: Persist raw monitor event BEFORE evaluation.
+        # This is forensic ground truth — evaluation must not be able to delete it.
+        event_id = uuid.uuid4()
+        request_id = uuid.uuid4()
+        received_at = datetime.now(timezone.utc)
+        try:
+            self.store.create_monitor_event(
+                event_id=event_id,
+                tenant_id=access.tenant_id,
+                agent_id=request.agent_id,
+                action=request.action,
+                source_url=request.source_url,
+                context=request.context or {},
+                metadata=request.metadata or {},
+                received_at=received_at,
+                request_id=request_id,
+            )
+        except Exception:
+            self.logger.exception("Failed to persist raw monitor event — continuing evaluation")
+            # Raw event persistence failure must not block evaluation.
+
+        # Step 2: Evaluate policy (existing logic unchanged)
         allowed_domains = tuple(agent.allowed_domains or self.settings.default_allowed_domains)
         decision, findings, proof = self.policy.evaluate(
             request,

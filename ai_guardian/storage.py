@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -74,6 +75,19 @@ CREATE TABLE IF NOT EXISTS events (
     FOREIGN KEY(agent_id) REFERENCES agents(agent_id),
     FOREIGN KEY(tenant_id) REFERENCES tenants(tenant_id)
 );
+
+CREATE TABLE IF NOT EXISTS monitor_events (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    source_url      TEXT,
+    context         TEXT NOT NULL DEFAULT '{}',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    received_at     TEXT NOT NULL,
+    request_id     TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
 """
 
 POSTGRES_SCHEMA = """
@@ -119,6 +133,19 @@ CREATE TABLE IF NOT EXISTS events (
     context JSONB NOT NULL,
     source_url TEXT,
     created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS monitor_events (
+    id              UUID        PRIMARY KEY,
+    tenant_id       TEXT        NOT NULL,
+    agent_id        TEXT        NOT NULL,
+    action          TEXT        NOT NULL,
+    source_url      TEXT,
+    context         JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    metadata        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    request_id      UUID        NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
 
@@ -288,6 +315,66 @@ class SQLiteStore:
             self._conn.commit()
             event_id = cursor.lastrowid
         return EventRecord(id=event_id, tenant_id=tenant_id, agent_id=agent_id, action=action, decision=decision, anomaly=anomaly, proof=proof, findings=findings, context=context, source_url=source_url, created_at=created_at)
+
+    def create_monitor_event(
+        self,
+        event_id: uuid.UUID,
+        tenant_id: str,
+        agent_id: str,
+        action: str,
+        source_url: str | None,
+        context: dict,
+        metadata: dict,
+        received_at: datetime,
+        request_id: uuid.UUID,
+    ) -> None:
+        """Persist raw monitor event to monitor_events table. Called before evaluation."""
+        created_at = _utc_now()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO monitor_events (id, tenant_id, agent_id, action, source_url, context, metadata, received_at, request_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(event_id),
+                    tenant_id,
+                    agent_id,
+                    action,
+                    source_url,
+                    json.dumps(context),
+                    json.dumps(metadata),
+                    received_at.isoformat(),
+                    str(request_id),
+                    created_at.isoformat(),
+                ),
+            )
+            self._conn.commit()
+
+    def list_monitor_events(self, tenant_id: str, limit: int = 20) -> list:
+        """Read raw monitor events for a tenant, newest first."""
+        from .models import MonitorEventRecord
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM monitor_events WHERE tenant_id = ? ORDER BY received_at DESC LIMIT ?",
+                (tenant_id, limit),
+            ).fetchall()
+        records = []
+        for row in rows:
+            d = dict(row)
+            records.append(
+                MonitorEventRecord(
+                    id=uuid.UUID(d["id"]),
+                    tenant_id=d["tenant_id"],
+                    agent_id=d["agent_id"],
+                    action=d["action"],
+                    source_url=d["source_url"],
+                    context=json.loads(d["context"]),
+                    metadata=json.loads(d["metadata"]),
+                    received_at=_to_datetime(d["received_at"]),
+                    request_id=uuid.UUID(d["request_id"]),
+                    created_at=_to_datetime(d["created_at"]),
+                )
+            )
+        return records
 
     def list_events(self, tenant_id: str, limit: int = 50, decision: str | None = None) -> list[EventRecord]:
         query = "SELECT * FROM events WHERE tenant_id = ?"
@@ -461,6 +548,69 @@ class PostgresStore:
                 event_id = cur.fetchone()["id"]
             conn.commit()
         return EventRecord(id=event_id, tenant_id=tenant_id, agent_id=agent_id, action=action, decision=decision, anomaly=anomaly, proof=proof, findings=findings, context=context, source_url=source_url, created_at=created_at)
+
+    def create_monitor_event(
+        self,
+        event_id: uuid.UUID,
+        tenant_id: str,
+        agent_id: str,
+        action: str,
+        source_url: str | None,
+        context: dict,
+        metadata: dict,
+        received_at: datetime,
+        request_id: uuid.UUID,
+    ) -> None:
+        """Persist raw monitor event to monitor_events table. Called before evaluation."""
+        created_at = _utc_now()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO monitor_events (id, tenant_id, agent_id, action, source_url, context, metadata, received_at, request_id, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s)",
+                    (
+                        event_id,
+                        tenant_id,
+                        agent_id,
+                        action,
+                        source_url,
+                        json.dumps(context),
+                        json.dumps(metadata),
+                        received_at,
+                        request_id,
+                        created_at,
+                    ),
+                )
+            conn.commit()
+
+    def list_monitor_events(self, tenant_id: str, limit: int = 20) -> list:
+        """Read raw monitor events for a tenant, newest first."""
+        from .models import MonitorEventRecord
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM monitor_events WHERE tenant_id = %s ORDER BY received_at DESC LIMIT %s",
+                    (tenant_id, limit),
+                )
+                rows = cur.fetchall()
+        records = []
+        for row in rows:
+            records.append(
+                MonitorEventRecord(
+                    id=row["id"],
+                    tenant_id=row["tenant_id"],
+                    agent_id=row["agent_id"],
+                    action=row["action"],
+                    source_url=row["source_url"],
+                    context=row["context"] if isinstance(row["context"], dict) else json.loads(row["context"]),
+                    metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"]),
+                    received_at=_to_datetime(row["received_at"]),
+                    request_id=row["request_id"],
+                    created_at=_to_datetime(row["created_at"]),
+                )
+            )
+        return records
 
     def list_events(self, tenant_id: str, limit: int = 50, decision: str | None = None) -> list[EventRecord]:
         query = "SELECT * FROM events WHERE tenant_id = %s"

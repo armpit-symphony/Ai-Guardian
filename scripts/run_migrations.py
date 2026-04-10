@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def _migration_files() -> list[Path]:
-    return sorted(Path("migrations").glob("*.sql"))
+    return sorted(Path("migrations").glob("*.sql")) + sorted(Path("migrations").glob("*.postgres.sql"))
 
 
 def run_sqlite(database_path: str) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -118,3 +119,20 @@ class AccessProfile(BaseModel):
     tenant: TenantRecord
     api_key: ApiKeyRecord
     capabilities: list[str]
+
+
+class MonitorEventRecord(BaseModel):
+    """
+    Raw monitor event record — written to monitor_events at ingest time,
+    before evaluation runs. This is forensic ground truth.
+    """
+    id: uuid.UUID
+    tenant_id: str
+    agent_id: str
+    action: str
+    source_url: str | None
+    context: dict[str, Any]
+    metadata: dict[str, Any]
+    received_at: datetime
+    request_id: uuid.UUID
+    created_at: datetime

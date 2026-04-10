@@ -166,6 +166,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
+    @app.get("/api/v1/monitor/events")
+    def list_monitor_events(
+        limit: int = Query(default=20, ge=1, le=200),
+        access: AccessContext = Depends(require_access),
+    ):
+        """Read raw monitor events for verification and debugging. Newest first."""
+        return service.store.list_monitor_events(tenant_id=access.tenant_id, limit=limit)
+
     @app.get("/api/v1/events")
     def list_events(
         limit: int = Query(default=50, ge=1, le=200),
