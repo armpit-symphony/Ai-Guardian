@@ -88,6 +88,18 @@ CREATE TABLE IF NOT EXISTS monitor_events (
     request_id     TEXT NOT NULL,
     created_at     TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS evaluation_results (
+    id                  TEXT PRIMARY KEY,
+    monitor_event_id    TEXT NOT NULL,
+    tenant_id           TEXT NOT NULL,
+    decision            TEXT NOT NULL,
+    score               REAL,
+    reasons             TEXT NOT NULL DEFAULT '[]',
+    policy_version      TEXT,
+    evaluator_name      TEXT,
+    created_at          TEXT NOT NULL
+);
 """
 
 POSTGRES_SCHEMA = """
@@ -146,6 +158,18 @@ CREATE TABLE IF NOT EXISTS monitor_events (
     received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     request_id      UUID        NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_results (
+    id                  UUID        PRIMARY KEY,
+    monitor_event_id    UUID        NOT NULL REFERENCES monitor_events(id) ON DELETE CASCADE,
+    tenant_id           TEXT        NOT NULL,
+    decision            TEXT        NOT NULL,
+    score               NUMERIC     NULL,
+    reasons             JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    policy_version      TEXT        NULL,
+    evaluator_name      TEXT        NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
 
@@ -371,6 +395,63 @@ class SQLiteStore:
                     metadata=json.loads(d["metadata"]),
                     received_at=_to_datetime(d["received_at"]),
                     request_id=uuid.UUID(d["request_id"]),
+                    created_at=_to_datetime(d["created_at"]),
+                )
+            )
+        return records
+
+    def create_evaluation_result(
+        self,
+        result_id: uuid.UUID,
+        monitor_event_id: uuid.UUID,
+        tenant_id: str,
+        decision: str,
+        score: float | None,
+        reasons: list[dict[str, Any]],
+        policy_version: str | None,
+        evaluator_name: str | None,
+        created_at: datetime,
+    ) -> None:
+        """Write evaluation result — called after evaluation completes. Independent of raw event write."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO evaluation_results (id, monitor_event_id, tenant_id, decision, score, reasons, policy_version, evaluator_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(result_id),
+                    str(monitor_event_id),
+                    tenant_id,
+                    decision,
+                    score,
+                    json.dumps(reasons),
+                    policy_version,
+                    evaluator_name,
+                    created_at.isoformat(),
+                ),
+            )
+            self._conn.commit()
+
+    def list_evaluation_results(self, tenant_id: str, limit: int = 20) -> list:
+        """Read evaluation results for a tenant, newest first."""
+        from .models import EvaluationResultRecord
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM evaluation_results WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_id, limit),
+            ).fetchall()
+        records = []
+        for row in rows:
+            d = dict(row)
+            records.append(
+                EvaluationResultRecord(
+                    id=uuid.UUID(d["id"]),
+                    monitor_event_id=uuid.UUID(d["monitor_event_id"]),
+                    tenant_id=d["tenant_id"],
+                    decision=d["decision"],
+                    score=d["score"],
+                    reasons=json.loads(d["reasons"]),
+                    policy_version=d["policy_version"],
+                    evaluator_name=d["evaluator_name"],
                     created_at=_to_datetime(d["created_at"]),
                 )
             )
@@ -608,6 +689,66 @@ class PostgresStore:
                     received_at=_to_datetime(row["received_at"]),
                     request_id=row["request_id"],
                     created_at=_to_datetime(row["created_at"]),
+                )
+            )
+        return records
+
+    def create_evaluation_result(
+        self,
+        result_id: uuid.UUID,
+        monitor_event_id: uuid.UUID,
+        tenant_id: str,
+        decision: str,
+        score: float | None,
+        reasons: list[dict[str, Any]],
+        policy_version: str | None,
+        evaluator_name: str | None,
+        created_at: datetime,
+    ) -> None:
+        """Write evaluation result — called after evaluation completes. Independent of raw event write."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO evaluation_results (id, monitor_event_id, tenant_id, decision, score, reasons, policy_version, evaluator_name, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        str(result_id),
+                        str(monitor_event_id),
+                        tenant_id,
+                        decision,
+                        score,
+                        json.dumps(reasons),
+                        policy_version,
+                        evaluator_name,
+                        created_at.isoformat(),
+                    ),
+                )
+            conn.commit()
+
+    def list_evaluation_results(self, tenant_id: str, limit: int = 20) -> list:
+        """Read evaluation results for a tenant, newest first."""
+        from .models import EvaluationResultRecord
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM evaluation_results WHERE tenant_id = %s ORDER BY created_at DESC LIMIT %s",
+                    (tenant_id, limit),
+                )
+                rows = cur.fetchall()
+        records = []
+        for row in rows:
+            d = dict(row)
+            records.append(
+                EvaluationResultRecord(
+                    id=d["id"],
+                    monitor_event_id=d["monitor_event_id"],
+                    tenant_id=d["tenant_id"],
+                    decision=d["decision"],
+                    score=float(d["score"]) if d["score"] is not None else None,
+                    reasons=d["reasons"] if isinstance(d["reasons"], list) else json.loads(d["reasons"]),
+                    policy_version=d["policy_version"],
+                    evaluator_name=d["evaluator_name"],
+                    created_at=_to_datetime(d["created_at"]),
                 )
             )
         return records

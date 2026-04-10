@@ -136,3 +136,19 @@ class MonitorEventRecord(BaseModel):
     received_at: datetime
     request_id: uuid.UUID
     created_at: datetime
+
+
+class EvaluationResultRecord(BaseModel):
+    """
+    Guardian evaluation decision — written to evaluation_results after
+    policy evaluation completes. Linked to monitor_events by monitor_event_id.
+    """
+    id: uuid.UUID
+    monitor_event_id: uuid.UUID
+    tenant_id: str
+    decision: str
+    score: float | None
+    reasons: list[dict[str, Any]]
+    policy_version: str | None
+    evaluator_name: str | None
+    created_at: datetime

@@ -147,6 +147,24 @@ class GuardianService:
                 allowed_domains=allowed_domains,
             ),
         )
+
+        # Step 3: Persist evaluation result — linked to monitor_events row.
+        # Written AFTER evaluation; isolated from raw event persistence.
+        try:
+            self.store.create_evaluation_result(
+                result_id=uuid.uuid4(),
+                monitor_event_id=event_id,
+                tenant_id=access.tenant_id,
+                decision=decision,
+                score=None,  # score field reserved for future confidence/risk scoring
+                reasons=[f.model_dump() for f in findings],
+                policy_version=getattr(self.settings, "policy_version", None),
+                evaluator_name="default",
+                created_at=datetime.now(timezone.utc),
+            )
+        except Exception:
+            self.logger.exception("Failed to persist evaluation result — continuing")
+
         event = self.store.create_event(
             tenant_id=access.tenant_id,
             agent_id=request.agent_id,
