@@ -114,7 +114,19 @@ class GuardianService:
     def monitor(self, access: AccessContext, request: MonitorRequest) -> MonitorResult:
         agent = self.store.get_agent(access.tenant_id, request.agent_id)
         if not agent:
-            raise ValueError(f"Unknown agent_id '{request.agent_id}'. Register it before monitoring.")
+            # Auto-register unknown agents for Phase 1 flexibility.
+            # In production, agents should be registered out-of-band.
+            try:
+                self.store.create_agent(
+                    access.tenant_id,
+                    request.agent_id,  # Use the provided agent_id directly
+                    AgentRegistration(
+                        name=request.agent_id,
+                        owner=request.agent_id,
+                    )
+                )
+            except Exception:
+                pass  # Another worker may have registered it first
 
         # Step 1: Persist raw monitor event BEFORE evaluation.
         # This is forensic ground truth — evaluation must not be able to delete it.
