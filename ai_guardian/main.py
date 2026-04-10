@@ -190,6 +190,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Read normalized findings across all sources. Newest first."""
         return service.store.list_findings(tenant_id=access.tenant_id, limit=limit)
 
+    @app.get("/api/v1/audit/feed")
+    def get_audit_feed(
+        limit: int = Query(default=50, ge=1, le=200),
+        access: AccessContext = Depends(require_access),
+    ):
+        """
+        Unified audit feed: newest-first stream combining monitor_events,
+        evaluation_results, and findings into a single cross-source view.
+
+        Each record is tagged with record_type so consumers can identify the source.
+        Findings take priority — the feed shows findings rows alongside raw
+        monitor_event and evaluation_result rows, all sorted by timestamp.
+        """
+        return service.store.get_audit_feed(tenant_id=access.tenant_id, limit=limit)
+
     @app.get("/api/v1/events")
     def list_events(
         limit: int = Query(default=50, ge=1, le=200),

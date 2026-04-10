@@ -578,6 +578,94 @@ class SQLiteStore:
             )
         return records
 
+    def get_audit_feed(self, tenant_id: str, limit: int = 50) -> list[dict]:
+        """
+        Unified audit stream: newest-first feed combining monitor_events,
+        evaluation_results, and findings into a single normalized view.
+
+        Each record is tagged with record_type so consumers can distinguish source.
+        """
+        per_source = limit * 3  # over-fetch from each then merge
+
+        with self._lock:
+            ev_rows = self._conn.execute(
+                "SELECT * FROM monitor_events WHERE tenant_id = ? ORDER BY received_at DESC LIMIT ?",
+                (tenant_id, per_source),
+            ).fetchall()
+            er_rows = self._conn.execute(
+                "SELECT * FROM evaluation_results WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_id, per_source),
+            ).fetchall()
+            fi_rows = self._conn.execute(
+                "SELECT * FROM findings WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_id, per_source),
+            ).fetchall()
+
+        feed: list[dict] = []
+
+        for row in ev_rows:
+            d = dict(row)
+            feed.append({
+                "record_type": "monitor_event",
+                "feed_timestamp": d["received_at"],
+                "tenant_id": d["tenant_id"],
+                "agent_id": d["agent_id"],
+                "action": d["action"],
+                "source_url": d["source_url"],
+                "decision": None,
+                "severity": None,
+                "title": d["action"],
+                "type": None,
+                "monitor_event_id": d["id"],
+                "evaluation_result_id": None,
+                "finding_id": None,
+                "source": None,
+                "resource": d["source_url"],
+            })
+
+        for row in er_rows:
+            d = dict(row)
+            feed.append({
+                "record_type": "evaluation_result",
+                "feed_timestamp": d["created_at"],
+                "tenant_id": d["tenant_id"],
+                "agent_id": None,
+                "action": None,
+                "source_url": None,
+                "decision": d["decision"],
+                "severity": None,
+                "title": d["decision"],
+                "type": None,
+                "monitor_event_id": d["monitor_event_id"],
+                "evaluation_result_id": d["id"],
+                "finding_id": None,
+                "source": None,
+                "resource": None,
+            })
+
+        for row in fi_rows:
+            d = dict(row)
+            feed.append({
+                "record_type": "finding",
+                "feed_timestamp": d["created_at"],
+                "tenant_id": d["tenant_id"],
+                "agent_id": None,
+                "action": None,
+                "source_url": d["resource"],
+                "decision": None,
+                "severity": d["severity"],
+                "title": d["title"],
+                "type": d["type"],
+                "monitor_event_id": d["monitor_event_id"],
+                "evaluation_result_id": d["evaluation_result_id"],
+                "finding_id": d["id"],
+                "source": d["source"],
+                "resource": d["resource"],
+            })
+
+        feed.sort(key=lambda r: r["feed_timestamp"], reverse=True)
+        return feed[:limit]
+
     def list_events(self, tenant_id: str, limit: int = 50, decision: str | None = None) -> list[EventRecord]:
         query = "SELECT * FROM events WHERE tenant_id = ?"
         params: list[Any] = [tenant_id]
@@ -952,6 +1040,102 @@ class PostgresStore:
                 )
             )
         return records
+
+    def get_audit_feed(self, tenant_id: str, limit: int = 50) -> list[dict]:
+        """
+        Unified audit stream: newest-first feed combining monitor_events,
+        evaluation_results, and findings into a single normalized view.
+        """
+        per_source = limit * 3
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM monitor_events WHERE tenant_id = %s ORDER BY received_at DESC LIMIT %s",
+                    (tenant_id, per_source),
+                )
+                ev_rows = cur.fetchall()
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM evaluation_results WHERE tenant_id = %s ORDER BY created_at DESC LIMIT %s",
+                    (tenant_id, per_source),
+                )
+                er_rows = cur.fetchall()
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM findings WHERE tenant_id = %s ORDER BY created_at DESC LIMIT %s",
+                    (tenant_id, per_source),
+                )
+                fi_rows = cur.fetchall()
+
+        feed: list[dict] = []
+
+        for row in ev_rows:
+            d = dict(row)
+            feed.append({
+                "record_type": "monitor_event",
+                "feed_timestamp": d["received_at"].isoformat() if hasattr(d["received_at"], "isoformat") else str(d["received_at"]),
+                "tenant_id": d["tenant_id"],
+                "agent_id": d["agent_id"],
+                "action": d["action"],
+                "source_url": d["source_url"],
+                "decision": None,
+                "severity": None,
+                "title": d["action"],
+                "type": None,
+                "monitor_event_id": str(d["id"]),
+                "evaluation_result_id": None,
+                "finding_id": None,
+                "source": None,
+                "resource": d["source_url"],
+            })
+
+        for row in er_rows:
+            d = dict(row)
+            feed.append({
+                "record_type": "evaluation_result",
+                "feed_timestamp": d["created_at"].isoformat() if hasattr(d["created_at"], "isoformat") else str(d["created_at"]),
+                "tenant_id": d["tenant_id"],
+                "agent_id": None,
+                "action": None,
+                "source_url": None,
+                "decision": d["decision"],
+                "severity": None,
+                "title": d["decision"],
+                "type": None,
+                "monitor_event_id": str(d["monitor_event_id"]),
+                "evaluation_result_id": str(d["id"]),
+                "finding_id": None,
+                "source": None,
+                "resource": None,
+            })
+
+        for row in fi_rows:
+            d = dict(row)
+            feed.append({
+                "record_type": "finding",
+                "feed_timestamp": d["created_at"].isoformat() if hasattr(d["created_at"], "isoformat") else str(d["created_at"]),
+                "tenant_id": d["tenant_id"],
+                "agent_id": None,
+                "action": None,
+                "source_url": d["resource"],
+                "decision": None,
+                "severity": d["severity"],
+                "title": d["title"],
+                "type": d["type"],
+                "monitor_event_id": str(d["monitor_event_id"]),
+                "evaluation_result_id": str(d["evaluation_result_id"]) if d["evaluation_result_id"] else None,
+                "finding_id": str(d["id"]),
+                "source": d["source"],
+                "resource": d["resource"],
+            })
+
+        feed.sort(key=lambda r: r["feed_timestamp"], reverse=True)
+        return feed[:limit]
 
     def list_events(self, tenant_id: str, limit: int = 50, decision: str | None = None) -> list[EventRecord]:
         query = "SELECT * FROM events WHERE tenant_id = %s"
