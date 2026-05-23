@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS evaluation_results (
     id              UUID        PRIMARY KEY,
     monitor_event_id UUID       NOT NULL REFERENCES monitor_events(id) ON DELETE CASCADE,
-    tenant_id       UUID        NOT NULL,
+    tenant_id       TEXT        NOT NULL,
     decision        TEXT        NOT NULL,  -- allow | review | block
     score           NUMERIC     NULL,
     reasons         JSONB       NOT NULL DEFAULT '[]'::jsonb,

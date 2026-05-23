@@ -195,7 +195,7 @@ CREATE TABLE IF NOT EXISTS evaluation_results (
 
 CREATE TABLE IF NOT EXISTS findings (
     id                   UUID        PRIMARY KEY,
-    tenant_id            UUID        NOT NULL,
+    tenant_id            TEXT        NOT NULL,
     monitor_event_id     UUID        NOT NULL REFERENCES monitor_events(id) ON DELETE CASCADE,
     evaluation_result_id UUID        NULL REFERENCES evaluation_results(id) ON DELETE SET NULL,
     source               TEXT        NOT NULL,
